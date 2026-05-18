@@ -1,0 +1,308 @@
+commit 9ab1daf21029dd18f8828d684ee6151d9238edab
+Author: Jakub Jelen <jjelen@redhat.com>
+Date:   Mon Jan 19 14:42:35 2026 +0100
+
+    Remove remaining uses of strcat()
+    
+    Signed-off-by: Jakub Jelen <jjelen@redhat.com>
+---
+ src/libopensc/Makefile.am       |  3 +--
+ src/libopensc/card-gids.c       |  5 +++--
+ src/libopensc/card-piv.c        |  8 +++++---
+ src/libopensc/log.c             | 13 ++++++++-----
+ src/libopensc/pkcs15.c          | 10 ++++++----
+ src/pkcs11/pkcs11-display.c     |  4 +++-
+ src/scconf/Makefile.am          |  1 +
+ src/scconf/scconf.c             |  5 +++--
+ src/tests/unittests/Makefile.am |  1 +
+ src/tools/eidenv.c              | 14 +++++++++-----
+ src/tools/openpgp-tool.c        | 13 ++++++++-----
+ 11 files changed, 48 insertions(+), 29 deletions(-)
+
+diff --git a/src/libopensc/Makefile.am b/src/libopensc/Makefile.am
+index eb17dfe7..53d4491b 100644
+--- a/src/libopensc/Makefile.am
++++ b/src/libopensc/Makefile.am
+@@ -83,8 +83,7 @@ libopensc_la_LIBADD = $(OPENPACE_LIBS) $(OPTIONAL_OPENSSL_LIBS) \
+ 	$(top_builddir)/src/common/libscdl.la \
+ 	$(top_builddir)/src/ui/libnotify.la \
+ 	$(top_builddir)/src/ui/libstrings.la \
+-	$(top_builddir)/src/sm/libsmeac.la \
+-	$(top_builddir)/src/common/libcompat.la
++	$(top_builddir)/src/sm/libsmeac.la
+ if WIN32
+ libopensc_la_LIBADD += -lws2_32 -lshlwapi -lcomctl32
+ endif
+diff --git a/src/libopensc/card-gids.c b/src/libopensc/card-gids.c
+index cce235b8..9dbce166 100644
+--- a/src/libopensc/card-gids.c
++++ b/src/libopensc/card-gids.c
+@@ -33,7 +33,6 @@ Some features are undocumented like the format used to store certificates. They
+ 
+ #include <stdlib.h>
+ #include <string.h>
+-#include "../common/compat_strlcpy.h"
+ 
+ #ifdef ENABLE_OPENSSL
+ /* openssl only needed for card administration */
+@@ -52,6 +51,8 @@ Some features are undocumented like the format used to store certificates. They
+ // used for changing the default label if used twice
+ #include "../pkcs15init/pkcs15-init.h"
+ #include "card-gids.h"
++#include "../common/compat_strlcat.h"
++#include "../common/compat_strlcpy.h"
+ 
+ #define GIDS_STATE_NONE 0
+ #define GIDS_STATE_READ_DATA_PRESENT 1
+@@ -1359,7 +1360,7 @@ static int gids_create_keyfile(sc_card_t *card, sc_pkcs15_object_t *object) {
+ 		char addition[4] = " 00";
+ 		addition[1] += containernum % 10;
+ 		addition[2] += (containernum & 0xFF) / 10;
+-		strcat(object->label, addition);
++		strlcat(object->label, addition, SC_PKCS15_MAX_LABEL_SIZE);
+ 	}
+ 
+ 	// convert char to wchar
+diff --git a/src/libopensc/card-piv.c b/src/libopensc/card-piv.c
+index a266888c..eb8114ad 100644
+--- a/src/libopensc/card-piv.c
++++ b/src/libopensc/card-piv.c
+@@ -49,6 +49,8 @@
+ #endif
+ #endif
+ 
++#include "common/compat_strlcat.h"
++#include "common/compat_strlcpy.h"
+ #include "internal.h"
+ 
+ /* 800-73-4 SM and VCI need: ECC, SM and OpenSSL or LibreSSL */
+@@ -5136,11 +5138,11 @@ piv_process_history(sc_card_t *card)
+ 		if (r != SC_SUCCESS)
+ 			goto err;
+ #ifdef _WIN32
+-		strcat(filename,"\\");
++		strlcat(filename, "\\", PATH_MAX);
+ #else
+-		strcat(filename,"/");
++		strlcat(filename, "/", PATH_MAX);
+ #endif
+-		strcat(filename,fp);
++		strlcat(filename, fp, PATH_MAX);
+ 
+ 		r = piv_read_obj_from_file(card, filename,
+ 			 &ocfhfbuf, &ocfhflen);
+diff --git a/src/libopensc/log.c b/src/libopensc/log.c
+index 36d24a3e..61689126 100644
+--- a/src/libopensc/log.c
++++ b/src/libopensc/log.c
+@@ -47,6 +47,7 @@
+ #ifdef ENABLE_OPENSSL
+ #include <openssl/err.h>
+ #endif /* ENABLE_OPENSSL */
++#include "common/compat_strlcat.h"
+ 
+ #include "internal.h"
+ 
+@@ -362,6 +363,7 @@ void _sc_debug_hex(sc_context_t *ctx, int type, const char *file, int line,
+ void sc_hex_dump(const u8 * in, size_t count, char *buf, size_t len)
+ {
+ 	char *p = buf;
++	size_t p_len = len;
+ 	int lines = 0;
+ 
+ 	if (buf == NULL || (in == NULL && count != 0)) {
+@@ -381,18 +383,19 @@ void sc_hex_dump(const u8 * in, size_t count, char *buf, size_t len)
+ 			else
+ 				ascbuf[i] = '.';
+ 			p += 3;
++			p_len -= 3;
+ 			in++;
+ 		}
+ 		count -= i;
+ 		ascbuf[i] = 0;
+ 		for (; i < 16 && lines; i++) {
+-			strcat(p, "   ");
++			strlcat(p, "   ", p_len);
+ 			p += 3;
++			p_len -= 3;
+ 		}
+-		strcat(p, ascbuf);
+-		p += strlen(p);
+-		sprintf(p, "\n");
+-		p++;
++		snprintf(p, p_len, "%s\n", ascbuf);
++		p += strlen(ascbuf) + 1;
++		p_len -= strlen(ascbuf) - 1;
+ 		lines++;
+ 	}
+ }
+diff --git a/src/libopensc/pkcs15.c b/src/libopensc/pkcs15.c
+index a932a445..a41f7ae4 100644
+--- a/src/libopensc/pkcs15.c
++++ b/src/libopensc/pkcs15.c
+@@ -33,6 +33,8 @@
+ #include "pkcs15.h"
+ #include "asn1.h"
+ #include "common/libscdl.h"
++#include "common/compat_strlcat.h"
++#include "common/compat_strlcpy.h"
+ 
+ #ifdef ENABLE_OPENSSL
+ #include <openssl/sha.h>
+@@ -2961,19 +2963,19 @@ sc_pkcs15_serialize_guid(unsigned char *in, size_t in_size, unsigned flags,
+ 
+ 	*out = '\0';
+ 	if (!flags)
+-		strcpy(out, "{");
++		strlcpy(out, "{", out_size);
+ 	for (ii=0; ii<4; ii++)
+ 		sprintf(out + strlen(out), "%02x", *(in + offs++));
+ 	for (jj=0; jj<3; jj++)   {
+-		strcat(out, "-");
++		strlcat(out, "-", out_size);
+ 		for (ii=0; ii<2; ii++)
+ 			sprintf(out + strlen(out), "%02x", *(in + offs++));
+ 	}
+-	strcat(out, "-");
++	strlcat(out, "-", out_size);
+ 	for (ii=0; ii<6; ii++)
+ 		sprintf(out + strlen(out), "%02x", *(in + offs++));
+ 	if (!flags)
+-		strcat(out, "}");
++		strlcat(out, "}", out_size);
+ 
+ 	return SC_SUCCESS;
+ }
+diff --git a/src/pkcs11/pkcs11-display.c b/src/pkcs11/pkcs11-display.c
+index 096168f8..62f45d8b 100644
+--- a/src/pkcs11/pkcs11-display.c
++++ b/src/pkcs11/pkcs11-display.c
+@@ -29,6 +29,8 @@
+ 
+ #include "pkcs11-display.h"
+ 
++#include "common/compat_strlcat.h"
++
+ /* NSS-specific stuff:
+  * https://github.com/nss-dev/nss/blob/d86f709bb4974d10b343c746b6f89dd1ef80259b/lib/util/pkcs11n.h
+  */
+@@ -170,7 +172,7 @@ print_generic(FILE *f, long type, CK_VOID_PTR value, CK_ULONG size, CK_VOID_PTR
+ 
+ 		/* padding */
+ 		while (strlen(hex) < 3*16)
+-			strcat(hex, "   ");
++			strlcat(hex, "   ", sizeof(hex));
+ 		fprintf(f, "\n    %08X  %s %s", offset, hex, ascii);
+ 	}
+ 	else {
+diff --git a/src/scconf/Makefile.am b/src/scconf/Makefile.am
+index af5927dd..78379452 100644
+--- a/src/scconf/Makefile.am
++++ b/src/scconf/Makefile.am
+@@ -11,3 +11,4 @@ noinst_LTLIBRARIES = libscconf.la
+ AM_CPPFLAGS = -I$(top_srcdir)/src
+ 
+ libscconf_la_SOURCES = scconf.c parse.c write.c sclex.c 
++libscconf_la_LIBADD = $(top_builddir)/src/common/libcompat.la
+diff --git a/src/scconf/scconf.c b/src/scconf/scconf.c
+index a220f5c3..ca13c3c9 100644
+--- a/src/scconf/scconf.c
++++ b/src/scconf/scconf.c
+@@ -30,6 +30,7 @@
+ #include <ctype.h>
+ #include <limits.h>
+ 
++#include "common/compat_strlcat.h"
+ #include "scconf.h"
+ 
+ scconf_context *scconf_new(const char *filename)
+@@ -424,9 +425,9 @@ char *scconf_list_strdup(const scconf_list * list, const char *filler)
+ 		return NULL;
+ 	}
+ 	while (list && list->data) {
+-		strcat(buf, list->data);
++		strlcat(buf, list->data, len);
+ 		if (filler) {
+-			strcat(buf, filler);
++			strlcat(buf, filler, len);
+ 		}
+ 		list = list->next;
+ 	}
+diff --git a/src/tests/unittests/Makefile.am b/src/tests/unittests/Makefile.am
+index 1ca2dcbc..96ace285 100644
+--- a/src/tests/unittests/Makefile.am
++++ b/src/tests/unittests/Makefile.am
+@@ -30,6 +30,7 @@ AM_CFLAGS = -I$(top_srcdir)/src/ \
+ AM_CPPFLAGS =$(CODE_COVERAGE_CPPFLAGS)
+ LDADD = $(top_builddir)/src/libopensc/libopensc.la \
+ 	$(top_builddir)/src/common/libscdl.la \
++	$(top_builddir)/src/common/libcompat.la \
+ 	$(CODE_COVERAGE_LIBS) \
+ 	$(OPTIONAL_OPENSSL_LIBS) \
+ 	$(CMOCKA_LIBS)
+diff --git a/src/tools/eidenv.c b/src/tools/eidenv.c
+index 62ddd216..8d6a4f19 100644
+--- a/src/tools/eidenv.c
++++ b/src/tools/eidenv.c
+@@ -30,6 +30,9 @@
+ #include <string.h>
+ 
+ #include <getopt.h>
++
++#include "common/compat_strlcat.h"
++#include "common/compat_strlcpy.h"
+ #include "libopensc/opensc.h"
+ #include "libopensc/asn1.h"
+ #include "libopensc/cards.h"
+@@ -148,12 +151,13 @@ static void bintohex(char *buf, int len)
+ static void exportprint(const char *key, const char *val)
+ {
+ 	if (exec_program) {
+-		char * cp;
+-		cp = malloc(strlen(key) + strlen(val) + 2);
++		char *cp;
++		size_t cp_size = strlen(key) + strlen(val) + 2;
++		cp = malloc(cp_size);
+ 		if (cp) {
+-			strcpy(cp, key);
+-			strcat(cp, "=");
+-			strcat(cp, val);
++			strlcpy(cp, key, cp_size);
++			strlcat(cp, "=", cp_size);
++			strlcat(cp, val, cp_size);
+ 			putenv(cp);
+ 			free(cp);
+ 		}
+diff --git a/src/tools/openpgp-tool.c b/src/tools/openpgp-tool.c
+index 4b7510fd..946f9db5 100644
+--- a/src/tools/openpgp-tool.c
++++ b/src/tools/openpgp-tool.c
+@@ -38,6 +38,9 @@
+ #include <ctype.h>
+ 
+ #include <getopt.h>
++
++#include "common/compat_strlcat.h"
++#include "common/compat_strlcpy.h"
+ #include "libopensc/opensc.h"
+ #include "libopensc/asn1.h"
+ #include "libopensc/cards.h"
+@@ -234,13 +237,13 @@ static void display_data(const struct ef_name_map *map, u8 *data, size_t length)
+ 
+ 		if (value != NULL) {
+ 			if (exec_program) {
+-				char *envvar= malloc(strlen(map->env_name) +
+-							strlen(value) + 2);
++				size_t envvar_size = strlen(map->env_name) + strlen(value) + 2;
++				char *envvar = malloc(envvar_size);
+ 
+ 				if (envvar != NULL) {
+-					strcpy(envvar, map->env_name);
+-					strcat(envvar, "=");
+-					strcat(envvar, value);
++					strlcpy(envvar, map->env_name, envvar_size);
++					strlcat(envvar, "=", envvar_size);
++					strlcat(envvar, value, envvar_size);
+ 					putenv(envvar);
+ 					/* envvar deliberately kept: see putenv(3) */
+ 				}

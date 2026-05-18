@@ -1,0 +1,229 @@
+commit e1cff854997884ed9b7251d409d9c9c7a025606d
+Author: Warner Losh <imp@FreeBSD.org>
+Date:   Fri Apr 24 12:29:53 2026 -0600
+
+    pass(4): Allowlist CCB func_codes to harden passthrough ioctls
+    
+    The pass(4) driver's CAMIOCOMMAND and CAMIOQUEUE ioctls accept arbitrary
+    CCBs from userland.  This device requires root to open, and thus send
+    these commands. Previously, the only func_code filter was a blocklist
+    check against the XPT_FC_XPT_ONLY flag.  This missed several dangerous
+    func_codes that lack that flag:
+    
+     - XPT_ABORT: the abort_ccb field is a raw kernel pointer from the
+       user CCB payload.  xpt_action_default() dereferences it without
+       validation, leading to kernel crashes or worse.
+    
+     - XPT_SASYNC_CB: the callback and callback_arg fields come directly
+       from the user CCB payload and get registered as a kernel async
+       callback, allowing arbitrary kernel code execution.
+    
+     - Target mode CCBs (XPT_EN_LUN, XPT_TARGET_IO, etc.) fall through
+       directly to the SIM with user-controlled payloads.
+    
+    Replace the XPT_FC_XPT_ONLY blocklist with an explicit allowlist of CCB
+    function codes that are known to be safe for userland to submit: I/O
+    operations (SCSI, ATA, NVMe, SMP, MMC), device queries, transport
+    settings, and a handful of safe control operations (NOOP, REL_SIMQ,
+    RESET_DEV, DEBUG). Normally, the /dev/pass* permissions only allow root
+    to access them, so this is only a safety issue by default.
+    
+    Also reject CAM_DATA_PADDR and CAM_DATA_SG_PADDR, since these pass
+    user-supplied physical addresses directly to DMA with no validation,
+    which on systems without an IOMMU allows arbitrary host memory access.
+    Add `options PASS_UNSAFE_PADDR` to allow the old behavior.
+    
+    Verified that camdd, camcontrol, smartmontools, and cdrtools use only
+    func_codes on the allowlist (XPT_SCSI_IO, XPT_ATA_IO, XPT_NVME_IO,
+    XPT_NVME_ADMIN, XPT_PATH_INQ, XPT_GDEV_TYPE, XPT_GET_TRAN_SETTINGS,
+    XPT_SET_TRAN_SETTINGS, XPT_RESET_DEV, XPT_DEBUG) and none use
+    CAM_DATA_PADDR.
+    
+    PR:                     293888, 293890
+    Assisted-By:            Claude Opus 4.6 (1M context)
+    Sponsored by:           Netflix
+    Reviewed by:            jhb
+    Differential Revision:  https://reviews.freebsd.org/D56486
+---
+ sys/cam/scsi/scsi_pass.c | 90 ++++++++++++++++++++++++++++++++++++++++++------
+ sys/conf/options         |  3 ++
+ sys/modules/cam/Makefile |  1 +
+ 3 files changed, 84 insertions(+), 10 deletions(-)
+
+diff --git a/sys/cam/scsi/scsi_pass.c b/sys/cam/scsi/scsi_pass.c
+index b44ab866dfe..6b1045dadf2 100644
+--- a/sys/cam/scsi/scsi_pass.c
++++ b/sys/cam/scsi/scsi_pass.c
+@@ -27,6 +27,8 @@
+  * SUCH DAMAGE.
+  */
+ 
++#include "opt_pass.h"
++
+ #include <sys/param.h>
+ #include <sys/systm.h>
+ #include <sys/kernel.h>
+@@ -1481,8 +1483,18 @@ passmemsetup(struct cam_periph *periph, struct pass_io_req *io_req)
+ 		}
+ 		break;
+ 	case CAM_DATA_PADDR:
++#ifdef PASS_UNSAFE_PADDR
+ 		/* Pass down the pointer as-is */
+ 		break;
++#else
++		/*
++		 * Physical addresses from userspace are not allowed.
++		 * They could be used for arbitrary DMA to/from host
++		 * memory on systems without an IOMMU.
++		 */
++		error = EINVAL;
++		goto bailout;
++#endif
+ 	case CAM_DATA_SG: {
+ 		size_t sg_length, size_to_go, alloc_size;
+ 		uint32_t num_segs_needed;
+@@ -1602,6 +1614,7 @@ passmemsetup(struct cam_periph *periph, struct pass_io_req *io_req)
+ 		break;
+ 	}
+ 	case CAM_DATA_SG_PADDR: {
++#ifdef PASS_UNSAFE_PADDR
+ 		size_t sg_length;
+ 
+ 		/*
+@@ -1661,6 +1674,15 @@ passmemsetup(struct cam_periph *periph, struct pass_io_req *io_req)
+ 			goto bailout;
+ 		}
+ 		break;
++#else
++		/*
++		 * Physical addresses from userspace are not allowed.
++		 * They could be used for arbitrary DMA to/from host
++		 * memory on systems without an IOMMU.
++		 */
++		error = EINVAL;
++		goto bailout;
++#endif
+ 	}
+ 	default:
+ 	case CAM_DATA_BIO:
+@@ -1754,6 +1776,54 @@ passioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flag, struct thread *t
+ 	return (error);
+ }
+ 
++/*
++ * Allowlist of CCB function codes that userland is permitted to send
++ * through the pass(4) driver.  This is a security boundary: anything
++ * not on this list could allow userland to corrupt kernel state.
++ * Notable exclusions:
++ *  - XPT_ABORT: payload contains a kernel CCB pointer that xpt_action
++ *    dereferences without validation.
++ *  - XPT_SASYNC_CB: payload contains a function pointer that gets
++ *    registered as a kernel callback.
++ *  - Target mode CCBs (XPT_EN_LUN, XPT_TARGET_IO, etc.): should only
++ *    be reachable through the target mode driver.
++ */
++static int
++pass_is_allowed_fc(xpt_opcode fc)
++{
++	switch (fc) {
++	/* I/O operations */
++	case XPT_SCSI_IO:
++	case XPT_ATA_IO:
++	case XPT_SMP_IO:
++	case XPT_NVME_IO:
++	case XPT_NVME_ADMIN:
++	case XPT_MMC_IO:
++	/* Device info / queries */
++	case XPT_GDEV_TYPE:
++	case XPT_GDEVLIST:
++	case XPT_PATH_INQ:
++	case XPT_GDEV_STATS:
++	case XPT_PATH_STATS:
++	case XPT_DEV_ADVINFO:
++	case XPT_GET_TRAN_SETTINGS:
++	case XPT_SET_TRAN_SETTINGS:
++	case XPT_GET_SIM_KNOB:
++	case XPT_SET_SIM_KNOB:
++	case XPT_MMC_GET_TRAN_SETTINGS:
++	case XPT_MMC_SET_TRAN_SETTINGS:
++	case XPT_CALC_GEOMETRY:
++	/* Misc safe operations */
++	case XPT_NOOP:
++	case XPT_REL_SIMQ:
++	case XPT_RESET_DEV:
++	case XPT_DEBUG:
++		return (1);
++	default:
++		return (0);
++	}
++}
++
+ static int
+ passdoioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flag, struct thread *td)
+ {
+@@ -1787,14 +1857,14 @@ passdoioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flag, struct thread
+ 		}
+ 
+ 		/*
+-		 * Some CCB types, like scan bus and scan lun can only go
+-		 * through the transport layer device.
++		 * Only allow CCB function codes that are known to be safe
++		 * for userland to issue through the pass(4) driver.
+ 		 */
+-		if (inccb->ccb_h.func_code & XPT_FC_XPT_ONLY) {
++		if (!pass_is_allowed_fc(inccb->ccb_h.func_code)) {
+ 			xpt_print(periph->path, "CCB function code %#x is "
+-			    "restricted to the XPT device\n",
++			    "not supported by the pass(4) driver\n",
+ 			    inccb->ccb_h.func_code);
+-			error = ENODEV;
++			error = EINVAL;
+ 			break;
+ 		}
+ 
+@@ -1910,14 +1980,14 @@ passdoioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flag, struct thread
+ 		}
+ 
+ 		/*
+-		 * Some CCB types, like scan bus and scan lun can only go
+-		 * through the transport layer device.
++		 * Only allow CCB function codes that are known to be safe
++		 * for userland to issue through the pass(4) driver.
+ 		 */
+-		if (ccb->ccb_h.func_code & XPT_FC_XPT_ONLY) {
++		if (!pass_is_allowed_fc(ccb->ccb_h.func_code)) {
+ 			xpt_print(periph->path, "CCB function code %#x is "
+-			    "restricted to the XPT device\n",
++			    "not supported by the pass(4) driver\n",
+ 			    ccb->ccb_h.func_code);
+-			error = ENODEV;
++			error = EINVAL;
+ 			goto camioqueue_error;
+ 		}
+ 
+diff --git a/sys/conf/options b/sys/conf/options
+index 6c8bc104888..6a533769375 100644
+--- a/sys/conf/options
++++ b/sys/conf/options
+@@ -386,6 +386,9 @@ CHANGER_MAX_BUSY_SECONDS	opt_cd.h
+ # Options used only in cam/scsi/scsi_da.c
+ DA_TRACK_REFS		opt_da.h
+ 
++# Allow unsafe PA transactions
++PASS_UNSAFE_PADDR	opt_pass.h
++
+ # Options used only in cam/scsi/scsi_sa.c
+ SA_IO_TIMEOUT		opt_sa.h
+ SA_SPACE_TIMEOUT	opt_sa.h
+diff --git a/sys/modules/cam/Makefile b/sys/modules/cam/Makefile
+index 41783c54e8a..80a175c7096 100644
+--- a/sys/modules/cam/Makefile
++++ b/sys/modules/cam/Makefile
+@@ -10,6 +10,7 @@ SRCS+=	opt_ada.h
+ SRCS+=	opt_scsi.h
+ SRCS+=	opt_cd.h
+ SRCS+=	opt_da.h
++SRCS+=	opt_pass.h
+ SRCS+=	opt_pt.h
+ SRCS+=	opt_sa.h
+ SRCS+=	opt_ses.h

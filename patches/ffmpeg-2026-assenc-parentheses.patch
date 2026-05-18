@@ -1,0 +1,27 @@
+commit 08d7646abf956372908ad288cd08c4d894a85d6e
+Author: David Korczynski <David@Adalogics.com>
+Date:   Sat May 16 16:34:30 2026 +0200
+
+    avformat/assenc: Add the missing parentheses
+    
+    Fixes: ada-1-poc.mkv
+    
+    Found-by: Claude and Ada Logics. This issue was found by Anthropic from using agents to study security of open source projects, and I am from Ada Logics helping validate the found issues and report to maintainers.
+    Signed-off-by: Michael Niedermayer <michael@niedermayer.cc>
+---
+ libavformat/assenc.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/libavformat/assenc.c b/libavformat/assenc.c
+index 75c19afd05..b948203885 100644
+--- a/libavformat/assenc.c
++++ b/libavformat/assenc.c
+@@ -186,7 +186,7 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
+     if (hh2 > 9) hh2 = 9, mm2 = 59, ss2 = 59, ms2 = 99;
+ 
+     text_len = strlen(p);
+-    while (text_len > 0 && p[text_len - 1] == '\r' || p[text_len - 1] == '\n')
++    while (text_len > 0 && (p[text_len - 1] == '\r' || p[text_len - 1] == '\n'))
+         text_len--;
+ 
+     dialogue->line = av_asprintf("%s%ld,%d:%02d:%02d.%02d,%d:%02d:%02d.%02d,%.*s",

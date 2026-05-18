@@ -1,0 +1,103 @@
+commit 719ef9ddfa3d760f0b6e78877a3740c64a4f84ae
+Author: Jack Lloyd <jack@randombit.net>
+Date:   Sat Mar 28 21:00:33 2026 -0400
+
+    Add a regression test for CVE-2026-35580
+---
+ src/tests/data/x509/cve_2026_35580/end_entity.pem | 20 +++++++++++++++++
+ src/tests/data/x509/cve_2026_35580/root.pem       | 22 ++++++++++++++++++
+ src/tests/test_x509_path.cpp                      | 27 +++++++++++++++++++++++
+ 3 files changed, 69 insertions(+)
+
+diff --git a/src/tests/data/x509/cve_2026_35580/end_entity.pem b/src/tests/data/x509/cve_2026_35580/end_entity.pem
+new file mode 100644
+index 000000000..f25558d54
+--- /dev/null
++++ b/src/tests/data/x509/cve_2026_35580/end_entity.pem
+@@ -0,0 +1,20 @@
++-----BEGIN CERTIFICATE-----
++MIIDRjCCAjCgAwIBAgIRAPANmin5rYHctR1/ho66Z2swCwYJKoZIhvcNAQELME8x
++GzAZBgNVBAMTEkxlZ2l0aW1hdGUgUm9vdCBDQTELMAkGA1UEBhMCVVMxFTATBgNV
++BAoTDFRydXN0ZWQgQ29ycDEMMAoGA1UECxMDUEtJMB4XDTIwMDEwMTAwMDAwMFoX
++DTM1MDEwMTAwMDAwMFowTzEbMBkGA1UEAxMSTGVnaXRpbWF0ZSBSb290IENBMQsw
++CQYDVQQGEwJVUzEVMBMGA1UEChMMVHJ1c3RlZCBDb3JwMQwwCgYDVQQLEwNQS0kw
++ggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDlVY+A5MhG1Y6zmOPHV2Ye
++IyNtyJKluTLe8ts1ETUDCEw6NWwNBA3Blyund6lEhFIBqrAYdD1k5SCx3QP/GSVA
++s4yZI2RHdtiNI8sI6GUTxohBulLPjbPc1mc/cGKLotsX6uZqmz3aF9a/6e+xFqRx
++5e/Iv55AWoOrHLzCrxkROGIncpHvN2cQDL7GEwWTleOjd5cXrSOdr41uqpzrCg5C
++pt00+wmMBSMQAHs1lqpg6dajnvPgqwndC2UzcbAQbcHOI1JqL4e3XfckK3CiTJS9
++tW3DXV/8FooDaOSfS6SySMm5AVYYIlSysNC177V38QC14LgrWQ1BjaYLxRhCc32V
++AgMBAAGjITAfMB0GA1UdEQQWMBSCEnZpY3RpbS5leGFtcGxlLmNvbTALBgkqhkiG
++9w0BAQsDggEBANYeHDakpm9ExaPORnGAHx9z2KlJLpOgy6E0wQjHNhPFVi3TfjXw
++MuYNEhxrCuaWHXmzQqxzzNWVC8kxHJjWrKhvPIgzeFK+YGVasCHBgCvtwOMj5zkW
++toeYrzSRW6uVAVCtlmFDLo8rR18rppnc4cVTxd2GKvspF2pa4MH8I31x+UJC3Jh4
++I6PbAzYuscyq7hRRsPRp6yNreVjR3dDkRDoW8pTGs4LMcXbeIsxWkLzJkDPOKzqV
++WJ6C/gPZnbzutTtqUnadkE3883O1BWdxmwr4hTk6rh2x6QGbgX+K/FjJoV0hC6ir
++PBBHKAg7vmadbnnAli0gE2wOJHj27U60c50=
++-----END CERTIFICATE-----
+diff --git a/src/tests/data/x509/cve_2026_35580/root.pem b/src/tests/data/x509/cve_2026_35580/root.pem
+new file mode 100644
+index 000000000..77ceb28bf
+--- /dev/null
++++ b/src/tests/data/x509/cve_2026_35580/root.pem
+@@ -0,0 +1,22 @@
++-----BEGIN CERTIFICATE-----
++MIIDkzCCAn2gAwIBAgIRAMJdl10ZoP/ygQOL3iqFPdQwCwYJKoZIhvcNAQELME8x
++GzAZBgNVBAMTEkxlZ2l0aW1hdGUgUm9vdCBDQTELMAkGA1UEBhMCVVMxFTATBgNV
++BAoTDFRydXN0ZWQgQ29ycDEMMAoGA1UECxMDUEtJMB4XDTIwMDEwMTAwMDAwMFoX
++DTM1MDEwMTAwMDAwMFowTzEbMBkGA1UEAxMSTGVnaXRpbWF0ZSBSb290IENBMQsw
++CQYDVQQGEwJVUzEVMBMGA1UEChMMVHJ1c3RlZCBDb3JwMQwwCgYDVQQLEwNQS0kw
++ggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDH7iAPHuxG6KahQ3kvcINe
++x250cq/Ya5oiosithy02/vUhn3BPRfl4DZfDRp6FD/XaYCLm8R/XHm69Gm02O6aT
++qQz91t/oE58rGRyJdhxsaw5quPUIZt+xcz+GdfpqTKnm1FgEoO3uKzUlQ2R2v9Oz
++v1aXwlEkp7PhkyPjA3enXGDFJzwbbukgikalmUcJtFGZc/XD9dkCv8iHFdw0hXdd
++Me7aeS4n29Yrjbo/bnUJdSm8PoDQYhm6nf3pBwCJtvAf8svp0HGsv+PH0zYC/h4u
++3uYTQdh8ivoRQgvoxoq9yMzv/cL5oQAzAmi0T7aWwBm1fWXTzRbYFELr/bBsnW+5
++AgMBAAGjbjBsMCEGA1UdDgQaBBixkU0cq4Tgd7gKxz24NAhqHdpNXu81U/cwDgYD
++VR0PAQH/BAQDAgGGMBIGA1UdEwEB/wQIMAYBAf8CAQEwIwYDVR0jBBwwGoAYsZFN
++HKuE4He4Csc9uDQIah3aTV7vNVP3MAsGCSqGSIb3DQEBCwOCAQEArh7FjMTyFEh7
++EiVnohpK7pg3tfRdjee/JCcj3hSNwpsvEzKF0UQLgxjzWAGcWdrSUJwaYzM5cgue
++ZvuLrjADFSyB0uUFnBitcDQUUd5yZSqGsRfUDFMCK4D+0HFSoADeDRRgaoRJxSjL
++HR1BEstaiQUzLWHNtA/nqZ8Vn4keieMiCXKPKVWWH4V7GEYmMMe7S5NDfewl+/Yp
++zOH2fbq783sl+nxteqX3EPjQrijKIX/a4voW8NC6pca3ArQthup+8uponMDXmM58
++158nJyDazOKeFYfUzEPH03G2Gn0sBTR67+lvP8MnJGJnsRPJCc6BrO9YtO69rTQu
++2zrUY6qfRw==
++-----END CERTIFICATE-----
+diff --git a/src/tests/test_x509_path.cpp b/src/tests/test_x509_path.cpp
+index cc6f9edcc..187411a67 100644
+--- a/src/tests/test_x509_path.cpp
++++ b/src/tests/test_x509_path.cpp
+@@ -1801,6 +1801,33 @@ class Name_Constraint_DN_Prefix_Test final : public Test {
+ 
+ BOTAN_REGISTER_TEST("x509", "x509_path_nc_prefix_dn", Name_Constraint_DN_Prefix_Test);
+ 
++class CVE_2026_35580_Test final : public Test {
++   public:
++      std::vector<Test::Result> run() override {
++         Test::Result result("CVE-2026-35580");
++
++         const Botan::Path_Validation_Restrictions restrictions;
++
++         auto end_entity = Botan::X509_Certificate(Test::data_file("x509/cve_2026_35580/end_entity.pem"));
++         auto trusted_root = Botan::X509_Certificate(Test::data_file("x509/cve_2026_35580/root.pem"));
++
++         auto validation_time = Botan::calendar_point(2026, 3, 29, 0, 0, 0).to_std_timepoint();
++
++         Botan::Certificate_Store_In_Memory trusted;
++         trusted.add_certificate(trusted_root);
++
++         const auto validation_result = Botan::x509_path_validate(
++            {end_entity}, restrictions, {&trusted}, "", Botan::Usage_Type::UNSPECIFIED, validation_time);
++
++         result.test_str_eq(
++            "Cert validation status", Botan::to_string(validation_result.result()), "Cannot establish trust");
++
++         return {result};
++      }
++};
++
++BOTAN_REGISTER_TEST("x509", "x509_cve_2026_35580", CVE_2026_35580_Test);
++
+    #endif
+ 
+ #endif

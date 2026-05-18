@@ -1,0 +1,24 @@
+commit bebc1a5b09e358b420077a1b5c0f85f8e7f0812f
+Author: Mark Johnston <markj@FreeBSD.org>
+Date:   Thu Apr 16 19:57:57 2026 +0000
+
+    in_mcast: Fix a lock leak in inp_set_source_filters()
+    
+    MFC after:      3 days
+    Reported by:    Claude Opus 4.6
+---
+ sys/netinet/in_mcast.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/sys/netinet/in_mcast.c b/sys/netinet/in_mcast.c
+index 6b9bb599a47..9e93992f81e 100644
+--- a/sys/netinet/in_mcast.c
++++ b/sys/netinet/in_mcast.c
+@@ -2582,6 +2582,7 @@ inp_set_source_filters(struct inpcb *inp, struct sockopt *sopt)
+ 		error = copyin(msfr.msfr_srcs, kss,
+ 		    sizeof(struct sockaddr_storage) * msfr.msfr_nsrcs);
+ 		if (error) {
++			IN_MULTI_UNLOCK();
+ 			free(kss, M_TEMP);
+ 			return (error);
+ 		}

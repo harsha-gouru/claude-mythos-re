@@ -1,0 +1,75 @@
+commit e9af5eb5a61d189327b553b24d0d31f19c64b63f
+Author: jsing <jsing@openbsd.org>
+Date:   Tue Mar 31 13:58:05 2026 +0000
+
+    Fix an off-by-one error in the X.509 verifier depth checking.
+    
+    In x509_verify_build_chains(), ensure that we check the current depth
+    against max_depth prior to turning it into a legacy-style depth index.
+    Additionally, add a guard to x509_verify_chain_append() so that we avoid
+    exceeding the maximum certs per chain, even if we fail to handle this
+    correctly elsewhere. Also prevent the legacy callback from being able
+    to override the maximum verification depth.
+    
+    The current off-by-one allows for a 4 byte overwrite to occur on heap
+    allocated memory - this will likely trigger a crash on OpenBSD (but may
+    go unnoticed elsewhere). This is only reachable if a TLS client is talking
+    to a malicious server or if a TLS server has client certificate
+    verification enabled - in both cases the verification depth also needs to
+    be set to the maximum allowed value of 32.
+    
+    It is worth noting that many TLS clients/servers set the maximum
+    verification depth to a value that is much less than the default. A libtls
+    client or server uses a default depth of 6 and is not impacted in this
+    configuration.
+    
+    Thanks to Calif.io in collaboration with Claude and Anthropic Research,
+    for reporting the issue.
+    
+    ok tb@
+---
+ lib/libcrypto/x509/x509_verify.c | 17 +++++++++++------
+ 1 file changed, 11 insertions(+), 6 deletions(-)
+
+diff --git a/lib/libcrypto/x509/x509_verify.c b/lib/libcrypto/x509/x509_verify.c
+index f25e2b3f15b..a530275ac9b 100644
+--- a/lib/libcrypto/x509/x509_verify.c
++++ b/lib/libcrypto/x509/x509_verify.c
+@@ -1,4 +1,4 @@
+-/* $OpenBSD: x509_verify.c,v 1.73 2025/02/08 10:12:00 tb Exp $ */
++/* $OpenBSD: x509_verify.c,v 1.74 2026/03/31 13:58:05 jsing Exp $ */
+ /*
+  * Copyright (c) 2020-2021 Bob Beck <beck@openbsd.org>
+  *
+@@ -155,6 +155,11 @@ x509_verify_chain_append(struct x509_verify_chain *chain, X509 *cert,
+ 	int verify_err = X509_V_ERR_UNSPECIFIED;
+ 	size_t idx;
+ 
++	if (sk_X509_num(chain->certs) >= X509_VERIFY_MAX_CHAIN_CERTS) {
++		*error = X509_V_ERR_CERT_CHAIN_TOO_LONG;
++		return 0;
++	}
++
+ 	if (!x509_constraints_extract_names(chain->names, cert,
+ 	    sk_X509_num(chain->certs) == 0, &verify_err)) {
+ 		*error = verify_err;
+@@ -661,14 +666,14 @@ x509_verify_build_chains(struct x509_verify_ctx *ctx, X509 *cert,
+ 		return;
+ 
+ 	depth = sk_X509_num(current_chain->certs);
++	if (depth >= ctx->max_depth) {
++		(void)x509_verify_cert_error(ctx, cert, depth,
++		    X509_V_ERR_CERT_CHAIN_TOO_LONG, 0);
++		return;
++	}
+ 	if (depth > 0)
+ 		depth--;
+ 
+-	if (depth >= ctx->max_depth &&
+-	    !x509_verify_cert_error(ctx, cert, depth,
+-		X509_V_ERR_CERT_CHAIN_TOO_LONG, 0))
+-		return;
+-
+ 	count = ctx->chains_count;
+ 
+ 	ctx->error = X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY;

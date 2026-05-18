@@ -1,0 +1,51 @@
+commit c471fce2bfa3d2f0e01f051b40c9a361e468226b
+Author: Nicholas Carlini <nicholas@carlini.com>
+Date:   Sun Mar 15 23:10:51 2026 +0000
+
+    avformat/mpegts: fix descriptor accounting across multiple IOD descriptors
+    
+    pmt_cb() passes mp4_descr + mp4_descr_count as the output base but
+    MAX_MP4_DESCR_COUNT (16) as the capacity, not the remaining capacity.
+    init_MP4DescrParseContext() resets d->descr_count to 0 on every call,
+    so the bounds check at parse_MP4ESDescrTag compares a fresh 0 against
+    16 regardless of the shifted base.
+    
+    A PMT with two IOD descriptors of 16 ESDescrs each will crash. The first
+    fills the buffer mp4_descr[0..15], and then the second writes
+    mp4_descr[16..31] -- 1152 bytes past the end of the stack.
+    
+    This change passes the remaining capacity instead of always passing 16.
+    The writeback in mp4_read_iods is incremented so the caller's running
+    count is preserved.
+    
+    Fixes: stack-buffer-overflow
+    
+    Found-by: Nicholas Carlini <nicholas@carlini.com>
+    (cherry picked from commit 3e8bec7871bae6722f8f615020374c1b53de7b56)
+    Signed-off-by: Michael Niedermayer <michael@niedermayer.cc>
+---
+ libavformat/mpegts.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/libavformat/mpegts.c b/libavformat/mpegts.c
+index bfbdbf5b19..4b326d309b 100644
+--- a/libavformat/mpegts.c
++++ b/libavformat/mpegts.c
+@@ -1703,7 +1703,7 @@ static int mp4_read_iods(AVFormatContext *s, const uint8_t *buf, unsigned size,
+ 
+     ret = parse_mp4_descr(&d, avio_tell(&d.pb.pub), size, MP4IODescrTag);
+ 
+-    *descr_count = d.descr_count;
++    *descr_count += d.descr_count;
+     return ret;
+ }
+ 
+@@ -2614,7 +2614,7 @@ static void pmt_cb(MpegTSFilter *filter, const uint8_t *section, int section_len
+             get8(&p, p_end); // label
+             len -= 2;
+             mp4_read_iods(ts->stream, p, len, mp4_descr + mp4_descr_count,
+-                          &mp4_descr_count, MAX_MP4_DESCR_COUNT);
++                          &mp4_descr_count, MAX_MP4_DESCR_COUNT - mp4_descr_count);
+         } else if (tag == REGISTRATION_DESCRIPTOR && len >= 4) {
+             prog_reg_desc = bytestream_get_le32(&p);
+             len -= 4;

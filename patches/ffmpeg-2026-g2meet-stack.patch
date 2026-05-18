@@ -1,0 +1,35 @@
+commit 989e621bcd93c3c79dbfbe65710505259b8c73e9
+Author: David Korczynski <David@Adalogics.com>
+Date:   Sun May 17 14:32:49 2026 +0200
+
+    avcodec/g2meet: The stack is EPIC_PIX_STACK_SIZE
+    
+    Fixes: out of array access
+    Fixes: ada-5-poc.avi
+    
+    Found-by: Claude and Ada Logics. This issue was found by Anthropic from using agents to study security of open source projects, and I am from Ada Logics helping validate the found issues and report to maintainers.
+    Signed-off-by: Michael Niedermayer <michael@niedermayer.cc>
+---
+ libavcodec/g2meet.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/libavcodec/g2meet.c b/libavcodec/g2meet.c
+index eb6aaf3072..1aeb128c4f 100644
+--- a/libavcodec/g2meet.c
++++ b/libavcodec/g2meet.c
+@@ -482,12 +482,13 @@ static void epic_free_pixel_cache(ePICPixHash *hash)
+ static inline int is_pixel_on_stack(const ePICContext *dc, uint32_t pix)
+ {
+     int i;
++    int n = FFMIN(dc->stack_pos, EPIC_PIX_STACK_SIZE);
+ 
+-    for (i = 0; i < dc->stack_pos; i++)
++    for (i = 0; i < n; i++)
+         if (dc->stack[i] == pix)
+             break;
+ 
+-    return i != dc->stack_pos;
++    return i != n;
+ }
+ 
+ #define TOSIGNED(val) (((val) >> 1) ^ -((val) & 1))

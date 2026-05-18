@@ -1,0 +1,37 @@
+commit bbdce45fda1ef92f0a8f5a8a995dde3a79fa7acc
+Author: Thai Duong <thai@calif.io>
+Date:   Sat May 16 04:54:36 2026 +0200
+
+    avcodec/diracdec: Enlarge `mctmp` to cover the worst-case `blheight·ybsep + yblen` rows, and break the MC loop when no output rows remain
+    
+    Fixes: ffmpeg_ANT-2026-02842_dirac-mctmp-heap-overflow
+    
+    Discovered by Claude (Anthropic). Confirmed and reported by Thai Duong (Calif.io).
+    
+    Signed-off-by: Michael Niedermayer <michael@niedermayer.cc>
+---
+ libavcodec/diracdec.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/libavcodec/diracdec.c b/libavcodec/diracdec.c
+index 2eabf74274..2a047c0bb9 100644
+--- a/libavcodec/diracdec.c
++++ b/libavcodec/diracdec.c
+@@ -341,7 +341,7 @@ static int alloc_buffers(DiracContext *s, int stride)
+ 
+     s->edge_emu_buffer_base = av_malloc_array(stride, MAX_BLOCKSIZE);
+ 
+-    s->mctmp     = av_malloc_array((stride+MAX_BLOCKSIZE), (h+MAX_BLOCKSIZE) * sizeof(*s->mctmp));
++    s->mctmp     = av_malloc_array((stride+MAX_BLOCKSIZE), (h + 5*MAX_BLOCKSIZE) * sizeof(*s->mctmp));
+     s->mcscratch = av_malloc_array(stride, MAX_BLOCKSIZE);
+ 
+     if (!s->edge_emu_buffer_base || !s->mctmp || !s->mcscratch)
+@@ -1944,7 +1944,7 @@ static int dirac_decode_frame_internal(DiracContext *s)
+                     h = p->height - start;
+                 else
+                     h = p->ybsep - (start - dsty);
+-                if (h < 0)
++                if (h <= 0)
+                     break;
+ 
+                 memset(mctmp+2*p->yoffset*p->stride, 0, 2*rowheight);

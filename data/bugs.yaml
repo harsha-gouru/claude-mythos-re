@@ -1,0 +1,203 @@
+updated: 2026-05-18
+scope: Publicly traceable fixed bugs and related patches from Claude Mythos / Anthropic-Claude bug discovery discussions.
+policy: Defensive patch/root-cause atlas only; no exploit PoCs.
+
+confirmed_mythos_or_anthropic_public_fixes:
+  - id: openbsd-sack-seq-overflow
+    project: OpenBSD
+    repo: openbsd-src
+    commit: 0e8206e596add74fef1653b4472de6b3723c435f
+    patch: patches/openbsd-2026-sack-seq-overflow.patch
+    file: sys/netinet/tcp_input.c
+    class: integer overflow -> invalid SACK sequence accepted -> NULL deref kernel crash
+    signal: "Reported by Nicholas Carlini at anthropic dot com"
+    fix_invariant: reject invalid SACK ranges before list/sequence handling
+
+  - id: openbsd-pgrp-race-uaf
+    project: OpenBSD
+    repo: openbsd-src
+    commit: 443dd5519a128d63a206302f7338eaef025b8076
+    patch: patches/openbsd-2026-pgrp-race-uaf.patch
+    file: sys/kern/kern_fork.c
+    class: stale process-group pointer copied during fork; raceable pool-cache object
+    signal: "Found by Nicholas Carlini at Anthropic; maintainer calls it a complicated AI-generated attack chain"
+    fix_invariant: start child without inherited pgrp pointer; set it late after process creation state is safe
+
+  - id: ffmpeg-h264-slice-sentinel
+    project: FFmpeg
+    repo: ffmpeg-official
+    commit: a5696b44a6f692118f5ebf6e420f0158971e9345
+    patch: patches/ffmpeg-2026-h264-slice-sentinel.patch
+    file: libavcodec/h264_slice.c
+    class: 16-bit sentinel collision at 65535/0xFFFF -> heap underwrite in border exchange path
+    signal: Found-by Nicholas Carlini; included in n8.1/n8.1.1
+    fix_invariant: reject slice_num >= 0xFFFF so valid IDs never collide with missing sentinel
+
+  - id: ffmpeg-mpegts-iod-stack-oob
+    project: FFmpeg
+    repo: ffmpeg-official
+    commit: c471fce2bfa3d2f0e01f051b40c9a361e468226b
+    patch: patches/ffmpeg-2026-mpegts-iod-stack-oob.patch
+    file: libavformat/mpegts.c
+    class: shifted output pointer with full capacity reused -> stack write beyond mp4_descr[16]
+    signal: Found-by Nicholas Carlini; included in n8.1/n8.1.1
+    fix_invariant: pass remaining capacity, not total capacity, across repeated descriptor parses
+
+  - id: ffmpeg-mpegts-jpegxs-uaf
+    project: FFmpeg
+    repo: ffmpeg-official
+    commit: 42692d0f571f335174049e06c855b20340d73e6d
+    patch: patches/ffmpeg-2026-mpegts-jpegxs-uaf.patch
+    file: libavformat/mpegts.c
+    class: early return leaves stale alias to packet buffer -> use-after-free on later cleanup/flush
+    signal: Found-by Nicholas Carlini; included in n8.1/n8.1.1
+    fix_invariant: route invalid JPEG-XS packet through normal cleanup instead of early-returning after ownership transfer
+
+  - id: freebsd-rpcsec-gss-stack-overflow
+    project: FreeBSD
+    repo: freebsd-src
+    commit: 143293c14f8de00c6d3de88cd23fc224e7014206
+    patch: patches/freebsd-2026-rpcsec-gss-stack-overflow.patch
+    file: sys/rpc/rpcsec_gss/svc_rpcsec_gss.c
+    cve: CVE-2026-4747
+    class: untrusted oa_length can exceed stack buffer size
+    signal: "Reported by Nicholas Carlini <npc@anthropic.com>"
+    fix_invariant: check copy length against stack destination before memcpy
+
+  - id: freebsd-tty-drop-ctty-dangling-ptr
+    project: FreeBSD
+    repo: freebsd-src
+    commit: 093903a8d4c05d1adff79895a52a3e3009ff07a7
+    patch: patches/freebsd-2026-tty-drop-ctty-dangling-ptr.patch
+    file: sys/kern/tty.c
+    cve: CVE-2026-5398
+    class: detached controlling terminal leaves stale tty -> session / process group pointers
+    signal: "Reported by Nicholas Carlini <npc@anthropic.com>"
+    fix_invariant: clear both sides of ownership relation during TIOCNOTTY detach
+
+  - id: freebsd-pkru-largepage
+    project: FreeBSD
+    repo: freebsd-src
+    commit: ca87c0b8e396fff01d55f1985c2556934c35a950
+    patch: patches/freebsd-2026-pkru-largepage.patch
+    file: sys/amd64/amd64/pmap.c
+    cve: CVE-2026-6386
+    class: page-table traversal missed 1GB largepage / boundary-map cases
+    signal: "Reported by Nicholas Carlini <npc@anthropic.com>"
+    fix_invariant: handle PG_PS at PDPE level and reject boundary-spanning PKRU requests
+
+  - id: linux-futex-requeue-flags-uaf
+    project: Linux
+    repo: linux
+    commit: 19f94b39058681dec64a10ebeb6f23fe7fc3f77a
+    stable_commit: e2f78c7ec1655fedd945366151ba54fcb9580508
+    patch: patches/linux-2026-futex-requeue-flags-uaf.patch
+    file: kernel/futex/requeue.c
+    class: mixed futex flags create mismatched object lifetime assumptions -> UAF
+    signal: "Nicholas reported that his LLM found it; Reported-by Nicholas Carlini <npc@anthropic.com>"
+    fix_invariant: sys_futex_requeue requires identical flags
+
+  - id: botan-certificate-known
+    project: Botan
+    repo: botan
+    commit: 98ea259410cde03e9f507c29a8f8d3ee2c27cd8f
+    test_commit: 719ef9ddfa3d760f0b6e78877a3740c64a4f84ae
+    patch: patches/botan-2026-certificate-known.patch
+    regression_patch: patches/botan-2026-certificate-known-regression.patch
+    cve_note: GitHub advisory uses CVE-2026-34580; repo regression test names CVE-2026-35580.
+    class: certificate store lookup matched DN/SKI only, not certificate bytes
+    signal: GitHub advisory credits Nick Carlini and Anthropic
+    fix_invariant: exact certificate comparison before declaring a cert known/trusted
+
+  - id: wolfssl-cve-2026-5194-digest-oid
+    project: wolfSSL
+    repo: wolfssl
+    commit: abce5be989ccd0665e2b9445abb856886975dfd1
+    merge_pr: 10131
+    patch: patches/wolfssl-2026-cve-5194-digest-oid.patch
+    cve: CVE-2026-5194
+    class: ECDSA signature verification accepted digest/OID combinations below key/security requirements
+    signal: CVE record credits Nicholas Carlini from Anthropic; fixed in 5.9.1
+    fix_invariant: enforce digest size and signature OID/key OID agreement in verify paths
+
+  - id: firefox-150-mythos-bundle
+    project: Firefox / Mozilla
+    repo: mozilla-advisories + gecko-dev
+    artifact: patches/mozilla-mfsa2026-30.yml
+    advisory: MFSA 2026-30
+    release: Firefox 150, announced 2026-04-21
+    signal: Mozilla says Mythos identified 271 Firefox 150 bugs; MFSA directly credits Anthropic on CVE-2026-6746, CVE-2026-6757, CVE-2026-6758 and has rollup CVEs CVE-2026-6784/6785/6786.
+    fix_invariant: bulk browser memory-safety and logic-bug hardening; individual Bugzilla patches need separate private/public access review
+
+related_public_claude_or_anthropic_research_fixes:
+  - id: openbsd-x509-depth-offbyone
+    commit: e9af5eb5a61d189327b553b24d0d31f19c64b63f
+    patch: patches/openbsd-2026-x509-depth-offbyone.patch
+    signal: Calif.io with Claude and Anthropic Research
+    class: max-depth off-by-one -> 4-byte heap overwrite
+  - id: ffmpeg-dirac-mctmp-heap-oob
+    commit: bbdce45fda1ef92f0a8f5a8a995dde3a79fa7acc
+    patch: patches/ffmpeg-2026-dirac-mctmp-heap-oob.patch
+    signal: Discovered by Claude (Anthropic), confirmed/reported by Calif.io
+  - id: ffmpeg-assenc-parentheses
+    commit: 08d7646abf956372908ad288cd08c4d894a85d6e
+    patch: patches/ffmpeg-2026-assenc-parentheses.patch
+    signal: Found-by Claude and Ada Logics
+  - id: ffmpeg-boxblur-offbyone
+    commit: 444f2cf047b92fac8d470f969dbd04bf1107757c
+    patch: patches/ffmpeg-2026-boxblur-offbyone.patch
+    signal: Found-by Claude and Ada Logics
+  - id: ffmpeg-g2meet-stack
+    commit: 989e621bcd93c3c79dbfbe65710505259b8c73e9
+    patch: patches/ffmpeg-2026-g2meet-stack.patch
+    signal: Found-by Claude and Ada Logics
+  - id: freebsd-shm-kinfo-zero
+    commit: 25cc459286a02b646751541ccde5a33319471c73
+    patch: patches/freebsd-2026-shm-kinfo-zero.patch
+    signal: Calif.io with Claude and Anthropic Research
+  - id: freebsd-so-splice-ktls
+    commit: d88a159da42a75dbd46ea4f6f9c8059975dab5e8
+    patch: patches/freebsd-2026-so-splice-ktls.patch
+    signal: Reported by Claude Sonnet 4.6
+  - id: freebsd-ip-mroute-lock-leak
+    commit: 18b7115cba2f698909a4801dc2cc1b04b1f4f210
+    patch: patches/freebsd-2026-ip-mroute-lock-leak.patch
+    signal: Reported by Claude Opus 4.6
+  - id: freebsd-in-mcast-lock-leak
+    commit: bebc1a5b09e358b420077a1b5c0f85f8e7f0812f
+    patch: patches/freebsd-2026-in-mcast-lock-leak.patch
+    signal: Reported by Claude Opus 4.6
+  - id: freebsd-pass-ccb-allowlist
+    commit: e1cff854997884ed9b7251d409d9c9c7a025606d
+    patch: patches/freebsd-2026-pass-ccb-allowlist.patch
+    signal: Assisted-by Claude Opus 4.6
+  - id: freebsd-cam-gdevlist-status
+    commit: 3454d97aaec12f4a8c676c34182200471eecae24
+    patch: patches/freebsd-2026-cam-gdevlist-status.patch
+    signal: Assisted-by Claude Opus 4.6
+  - id: ghostscript-type1-mm-blend-bounds
+    commit: 4e392a82d1b1780cab85804728317f36a9c4f7f7
+    patch: patches/ghostscript-2026-type1-mm-blend-bounds.patch
+    signal: mapped from Anthropic zero-days examples via oss-security
+  - id: opensc-strcat-cache-path
+    commit: 9ab1daf21029dd18f8828d684ee6151d9238edab
+    patch: patches/opensc-2026-strcat-cache-path.patch
+    signal: mapped from Anthropic zero-days examples via oss-security
+  - id: cgif-lzw-alloc-size
+    commit: 07052febd3a252d30e6f0de67b2ea4f6b9aacddd
+    patch: patches/cgif-2026-lzw-alloc-size.patch
+    signal: mapped from Anthropic zero-days examples via oss-security
+
+n_day_exploit_chain_primitives_not_mythos_discoveries:
+  - id: linux-ipset-bitmap-range-check
+    commit: 35f56c554eb1b56b77b3cf197a6b00922d49033d
+    patch: patches/linux-2024-ipset-bitmap-range-check.patch
+    class: missing range check; syzbot-reported; useful primitive in Mythos-style chain studies
+  - id: linux-af-unix-oob-uaf
+    commit: 5aa57d9f2d5311f19434d95b2a81610aa263e23b
+    patch: patches/linux-2024-af-unix-oob-uaf.patch
+    class: AF_UNIX OOB skb lifetime confusion; syzbot-reported
+  - id: linux-qdisc-root-uaf
+    commit: 2e95c4384438adeaa772caa560244b1a2efef816
+    patch: patches/linux-2024-qdisc-root-uaf.patch
+    class: qdisc hierarchy root/major-handle assumption -> dangling class pointer

@@ -1,0 +1,45 @@
+commit 443dd5519a128d63a206302f7338eaef025b8076
+Author: deraadt <deraadt@openbsd.org>
+Date:   Wed Apr 15 18:55:54 2026 +0000
+
+    During early stages of fork in process_new(), since the ps_pgrp field is
+    in the process copy region the child gets this pointer.  Before fork1()
+    completes the process creation, it is possible for other processes to change
+    the pgrp in an attacker controlled way, such that the pointer becomes stagnant.
+    A very complicated AI-generated attack chaining many methods (which a experienced
+    human could generate given sufficent time) suceeds at racing this stagnant pgrp
+    object in the pool cache and can do things it should not.
+    We need to start the children without a pgrp (ie. NULL), and update the
+    pgrp pointer late.
+    Found by Nicholas Carlini at Anthropic
+    this is security errata 7.7/037_pgrp.patch.sig and 7.8/031_pgrp.patch.sig
+---
+ sys/kern/kern_fork.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/sys/kern/kern_fork.c b/sys/kern/kern_fork.c
+index 5b925518234..b3d3dfe91bb 100644
+--- a/sys/kern/kern_fork.c
++++ b/sys/kern/kern_fork.c
+@@ -1,4 +1,4 @@
+-/*	$OpenBSD: kern_fork.c,v 1.278 2025/08/18 04:15:35 dlg Exp $	*/
++/*	$OpenBSD: kern_fork.c,v 1.279 2026/04/15 18:55:54 deraadt Exp $	*/
+ /*	$NetBSD: kern_fork.c,v 1.29 1996/02/09 18:59:34 christos Exp $	*/
+ 
+ /*
+@@ -236,6 +236,7 @@ process_new(struct proc *p, struct process *parent, int flags)
+ 
+ 	/* post-copy fixups */
+ 	pr->ps_pptr = parent;
++	pr->ps_pgrp = NULL;
+ 	pr->ps_ppid = parent->ps_pid;
+ 
+ 	WITNESS_SETCHILD(&pr->ps_mtx.mtx_lock_obj,
+@@ -456,6 +457,7 @@ fork1(struct proc *curp, int flags, void (*func)(void *), void *arg,
+ 	LIST_INSERT_HEAD(&allproc, p, p_list);
+ 	LIST_INSERT_HEAD(TIDHASH(p->p_tid), p, p_hash);
+ 	LIST_INSERT_HEAD(PIDHASH(pr->ps_pid), pr, ps_hash);
++	pr->ps_pgrp = curpr->ps_pgrp;
+ 	LIST_INSERT_AFTER(curpr, pr, ps_pglist);
+ 	LIST_INSERT_HEAD(&curpr->ps_children, pr, ps_sibling);
+ 

@@ -1,0 +1,55 @@
+commit 98ea259410cde03e9f507c29a8f8d3ee2c27cd8f
+Author: Jack Lloyd <jack@randombit.net>
+Date:   Sat Mar 28 21:00:33 2026 -0400
+
+    Fix Certificate_Store::certificate_known
+    
+    This function did not do what it claimed; namely it only checked that some
+    certificate with the same DN (and if set, subject key identifier) were set in
+    the store. The function did not otherwise compare the certificate it found with
+    the certificate passed as the argument.
+---
+ src/lib/x509/certstor.cpp | 10 ++++++++++
+ src/lib/x509/certstor.h   |  6 ++----
+ 2 files changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/src/lib/x509/certstor.cpp b/src/lib/x509/certstor.cpp
+index 9da500bd9..b02a47af9 100644
+--- a/src/lib/x509/certstor.cpp
++++ b/src/lib/x509/certstor.cpp
+@@ -19,6 +19,16 @@ namespace Botan {
+ 
+ Certificate_Store::~Certificate_Store() = default;
+ 
++bool Certificate_Store::certificate_known(const X509_Certificate& searching) const {
++   for(const auto& cert : find_all_certs(searching.subject_dn(), searching.subject_key_id())) {
++      if(cert == searching) {
++         return true;
++      }
++   }
++
++   return false;
++}
++
+ std::optional<X509_Certificate> Certificate_Store::find_cert(const X509_DN& subject_dn,
+                                                              const std::vector<uint8_t>& key_id) const {
+    const auto certs = find_all_certs(subject_dn, key_id);
+diff --git a/src/lib/x509/certstor.h b/src/lib/x509/certstor.h
+index 19c69566e..e985642a2 100644
+--- a/src/lib/x509/certstor.h
++++ b/src/lib/x509/certstor.h
+@@ -74,12 +74,10 @@ class BOTAN_PUBLIC_API(2, 0) Certificate_Store /* NOLINT(*-special-member-functi
+       virtual std::optional<X509_CRL> find_crl_for(const X509_Certificate& subject) const;
+ 
+       /**
+-      * @return whether the certificate is known
++      * @return whether this certificate is contained within the store
+       * @param cert certificate to be searched
+       */
+-      bool certificate_known(const X509_Certificate& cert) const {
+-         return find_cert(cert.subject_dn(), cert.subject_key_id()).has_value();
+-      }
++      bool certificate_known(const X509_Certificate& cert) const;
+ 
+       // remove this (used by TLS::Server)
+       virtual std::vector<X509_DN> all_subjects() const = 0;

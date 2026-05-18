@@ -1,0 +1,27 @@
+commit 25cc459286a02b646751541ccde5a33319471c73
+Author: Ed Maste <emaste@FreeBSD.org>
+Date:   Tue Mar 10 21:59:07 2026 -0400
+
+    shm: Zero struct kinfo_file in sysctl handler
+    
+    Reported by: Calif.io in collaboration with Claude and Anthropic Research
+    Reviewed by: jhb
+    Sponsored by: The FreeBSD Foundation
+    Differential Revision: https://reviews.freebsd.org/D55806
+---
+ sys/kern/uipc_shm.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sys/kern/uipc_shm.c b/sys/kern/uipc_shm.c
+index fe3feab4149..0ad5be2e8d7 100644
+--- a/sys/kern/uipc_shm.c
++++ b/sys/kern/uipc_shm.c
+@@ -2149,7 +2149,7 @@ sysctl_posix_shm_list(SYSCTL_HANDLER_ARGS)
+ {
+ 	struct shm_mapping *shmm;
+ 	struct sbuf sb;
+-	struct kinfo_file kif;
++	struct kinfo_file kif = {};
+ 	u_long i;
+ 	int error, error2;
+ 

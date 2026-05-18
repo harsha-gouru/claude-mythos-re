@@ -1,0 +1,92 @@
+commit 4e392a82d1b1780cab85804728317f36a9c4f7f7
+Author: Ken Sharp <Ken.Sharp@artifex.com>
+Date:   Mon Jan 26 16:52:54 2026 +0000
+
+    pdfwrite - bounds check interpreter and don't write invalid fonts
+    
+    Bug #709080 "Security Vulnerability: Ghostscript Incomplete fix for Type 1 MM blend stack bounds check"
+    
+    As explained in the bug report, the input font is invalid, and the type
+    1 to type 2 CharString conversion is missing a particular bounds check
+    The type 1 interpreter does have this check.
+    
+    So, add the bounds check to the converter. Note; the MM detector code,
+    which also runs a type 1 CharString parser, doesn't suffer from these
+    problems.
+    
+    But.... To get this far we must already have loaded the font, and
+    detected the fact that it is invalid. So we really shouldn't be getting
+    here, we should not attempt to convert invalid fonts from type 1 to
+    type 2.
+    
+    This turns out to be because of a long-standing and frankly rather
+    nonsensical test in pdf_compute_font_descriptor(). Because we often
+    are at this point in the code while unloading the device, again often
+    because this is terminating Ghostscript, the interpreter has already
+    shut down, so returning an error doesn't result in the interpreter
+    exiting with an error.
+    
+    So the code simply ignores the error from the type 1 interpreter.
+    
+    In my opinion this is the wrong thing to do. We should stop trying to
+    convert and write a broken font which means emitting a valid but
+    incorrect FontDescriptor, without a FontFile entry. The fact that we
+    can't signal the error is no excuse for ignoring it.
+    
+    (I've chosen to leave other errors, such as unudefined, alone because
+    an undefined glyph can be recovered from by using the /.notdef)
+    
+    This prevents us getting into the type 1 converter with a broken font
+    in the first place.
+    
+    This does produce a few differences in our regression tests, because
+    we now write FontDescriptors with no FontFile. In the case of PDF
+    output this results in font substitution, in the case of ps2write it
+    results in a file which doesn't render any output.
+    
+    I still think this is preferable to writing an invalid font.
+---
+ devices/vector/gdevpdtd.c | 4 ++--
+ devices/vector/gdevpsfx.c | 6 +++++-
+ 2 files changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/devices/vector/gdevpdtd.c b/devices/vector/gdevpdtd.c
+index b535c7fc2..3d2c2639b 100644
+--- a/devices/vector/gdevpdtd.c
++++ b/devices/vector/gdevpdtd.c
+@@ -1,4 +1,4 @@
+-/* Copyright (C) 2001-2024 Artifex Software, Inc.
++/* Copyright (C) 2001-2026 Artifex Software, Inc.
+    All Rights Reserved.
+ 
+    This software is provided AS-IS with no warranty, either express or
+@@ -465,7 +465,7 @@ pdf_compute_font_descriptor(gx_device_pdf *pdev, pdf_font_descriptor_t *pfd)
+         gs_char position=0;
+ 
+         code = bfont->procs.glyph_info((gs_font *)bfont, glyph, pmat, members, &info);
+-        if (code == gs_error_VMerror)
++        if (code == gs_error_VMerror || code == gs_error_invalidfont)
+             return code;
+         if (code < 0) {
+             /*
+diff --git a/devices/vector/gdevpsfx.c b/devices/vector/gdevpsfx.c
+index edaef6a2e..305a2a82b 100644
+--- a/devices/vector/gdevpsfx.c
++++ b/devices/vector/gdevpsfx.c
+@@ -1,4 +1,4 @@
+-/* Copyright (C) 2001-2025 Artifex Software, Inc.
++/* Copyright (C) 2001-2026 Artifex Software, Inc.
+    All Rights Reserved.
+ 
+    This software is provided AS-IS with no warranty, either express or
+@@ -289,6 +289,10 @@ type1_next(gs_type1_state *pcis)
+                 case 18:
+                     num_results = 6;
+                 blend:
++                    CS_CHECK_POP(csp, pcis->ostack);
++                    if (!CS_CHECK_CSTACK_BOUNDS(&csp[-fixed2int_var(csp[-1])], pcis->ostack))
++                        return_error(gs_error_invalidfont);
++
+                     code = gs_type1_blend(pcis, csp, num_results);
+                     if (code < 0)
+                         return code;

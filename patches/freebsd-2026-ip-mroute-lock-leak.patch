@@ -1,0 +1,255 @@
+commit 18b7115cba2f698909a4801dc2cc1b04b1f4f210
+Author: Mark Johnston <markj@FreeBSD.org>
+Date:   Wed Apr 15 15:01:58 2026 +0000
+
+    ip_mroute: Fix a lock leak in X_ip_mforward()
+    
+    If a FIB does not have a router configured, X_ip_mforward() would leak a
+    lock.  Plug the leak.
+    
+    The IPv6 counterpart did not have such a check.  It wouldn't send an
+    upcall to a non-existent router anyway due to the router_ver check, but
+    we should verify that a router is present anyway.
+    
+    Add regression test cases to exercise these code paths.
+    
+    Reported by:    Claude Opus 4.6
+    Fixes:          0bb9c2b665d9 ("ip6_mroute: FIBify")
+    Sponsored by:   Klara, Inc.
+    Sponsored by:   Stormshield
+---
+ sys/netinet/ip_mroute.c        |   4 +-
+ sys/netinet6/ip6_mroute.c      |   4 ++
+ tests/sys/netinet/ip_mroute.py | 153 +++++++++++++++++++++++++++++++++++++----
+ 3 files changed, 147 insertions(+), 14 deletions(-)
+
+diff --git a/sys/netinet/ip_mroute.c b/sys/netinet/ip_mroute.c
+index 350f5db947a..359755b19e9 100644
+--- a/sys/netinet/ip_mroute.c
++++ b/sys/netinet/ip_mroute.c
+@@ -1385,8 +1385,10 @@ X_ip_mforward(struct ip *ip, struct ifnet *ifp, struct mbuf *m,
+ 	 * BEGIN: MCAST ROUTING HOT PATH
+ 	 */
+ 	MRW_RLOCK();
+-	if (__predict_false(mfct->router == NULL))
++	if (__predict_false(mfct->router == NULL)) {
++		MRW_RUNLOCK();
+ 		return (EADDRNOTAVAIL);
++	}
+ 
+ 	if (imo && ((vifi = imo->imo_multicast_vif) < mfct->numvifs)) {
+ 		if (ip->ip_ttl < MAXTTL)
+diff --git a/sys/netinet6/ip6_mroute.c b/sys/netinet6/ip6_mroute.c
+index 9ae0d699ca3..0e8a0aa6f1e 100644
+--- a/sys/netinet6/ip6_mroute.c
++++ b/sys/netinet6/ip6_mroute.c
+@@ -1191,6 +1191,10 @@ X_ip6_mforward(struct ip6_hdr *ip6, struct ifnet *ifp, struct mbuf *m)
+ 
+ 	mfct = &V_mfctables[M_GETFIB(m)];
+ 	MFC6_LOCK();
++	if (__predict_false(mfct->router == NULL)) {
++		MFC6_UNLOCK();
++		return (EADDRNOTAVAIL);
++	}
+ 
+ 	/*
+ 	 * Determine forwarding mifs from the forwarding cache table
+diff --git a/tests/sys/netinet/ip_mroute.py b/tests/sys/netinet/ip_mroute.py
+index 5416d824d3c..c79b046445e 100644
+--- a/tests/sys/netinet/ip_mroute.py
++++ b/tests/sys/netinet/ip_mroute.py
+@@ -21,7 +21,9 @@ class MRouteTestTemplate(VnetTestTemplate):
+     COORD_SOCK = "coord.sock"
+ 
+     @staticmethod
+-    def _msgwait(sock: socket.socket, expected: bytes):
++    def _msgwait(sock: socket.socket, expected: bytes, timeout=None):
++        if timeout is not None:
++            sock.settimeout(timeout)
+         msg = sock.recv(1024)
+         assert msg == expected
+ 
+@@ -196,12 +198,7 @@ class Test1RBasicINET(MRouteINETTestTemplate):
+         self.waittest()
+ 
+ 
+-class Test1RCrissCrossINET(MRouteINETTestTemplate):
+-    """
+-    Test a router connected to four hosts, with pairs of interfaces
+-    in different FIBs.
+-    """
+-
++class MRouteINETCrissCrossTestTemplate(MRouteINETTestTemplate):
+     TOPOLOGY = {
+         "vnet_router": {"ifaces": ["if1", "if2", "if3", "if4"]},
+         "vnet_host1": {"ifaces": ["if1"]},
+@@ -231,6 +228,14 @@ class Test1RCrissCrossINET(MRouteINETTestTemplate):
+     }
+     MULTICAST_ADDR = "239.0.0.1"
+ 
++
++
++class Test1RCrissCrossINET(MRouteINETCrissCrossTestTemplate):
++    """
++    Test a router connected to four hosts, with pairs of interfaces
++    in different FIBs.
++    """
++
+     def setup_method(self, method):
+         # Create VNETs and start the handlers.
+         super().setup_method(method)
+@@ -288,6 +293,65 @@ class Test1RCrissCrossINET(MRouteINETTestTemplate):
+         self.waittest()
+ 
+ 
++class Test1RCrissCrossINETMissingRouter(MRouteINETCrissCrossTestTemplate):
++    """
++    Test what happens when a router is configured for some FIBs but not others.
++    """
++    
++    def setup_method(self, method):
++        # Create VNETs and start the handlers.
++        super().setup_method(method)
++
++        # Only start a pimd instance in FIB 0.
++        ifaces = [self.vnet.iface_alias_map[i].name for i in ["if1", "if2"]]
++        self.pimd0 = self.run_pimd("test0", ifaces, "127.0.0.1",
++                                   self.MULTICAST_ADDR + "/32", fib=0)
++
++        time.sleep(3)  # Give pimd a bit of time to get itself together.
++
++    def vnet_host1_handler(self, vnet):
++        self.jointest(vnet)
++
++        self.sock = self.mcast_join(self.MULTICAST_ADDR, 12345)
++        self._msgwait(self.sock, b"Hello, Multicast on FIB 0!")
++        self.mcast_sendto(self.MULTICAST_ADDR, 12345, vnet.ifaces[0].name,
++                          b"Goodbye, Multicast on FIB 0!")
++        self.donetest()
++
++    def vnet_host2_handler(self, vnet):
++        self.jointest(vnet)
++        self.sock = self.mcast_join(self.MULTICAST_ADDR, 12345)
++        self.mcast_sendto(self.MULTICAST_ADDR, 12345, vnet.ifaces[0].name,
++                          b"Hello, Multicast on FIB 0!")
++        self._msgwait(self.sock, b"Hello, Multicast on FIB 0!")
++        self._msgwait(self.sock, b"Goodbye, Multicast on FIB 0!")
++        self.donetest()
++
++    def vnet_host3_handler(self, vnet):
++        self.jointest(vnet)
++        self.sock = self.mcast_join(self.MULTICAST_ADDR, 12345)
++        timedout = False
++        try:
++            self._msgwait(self.sock, b"Hello, Multicast on FIB 1!", timeout=5)
++        except socket.timeout:
++            timedout = True
++        assert timedout, "Received a message when we shouldn't have"
++        self.donetest()
++
++    def vnet_host4_handler(self, vnet):
++        self.jointest(vnet)
++        self.sock = self.mcast_join(self.MULTICAST_ADDR, 12345)
++        self.mcast_sendto(self.MULTICAST_ADDR, 12345, vnet.ifaces[0].name,
++                          b"Hello, Multicast on FIB 1!")
++        self.donetest()
++
++    @pytest.mark.require_user("root")
++    @pytest.mark.require_progs(["pimd"])
++    @pytest.mark.timeout(30)
++    def test(self):
++        self.starttest(["vnet_host1", "vnet_host2", "vnet_host3", "vnet_host4"])
++        self.waittest()
++
+ class Test1RBasicINET6(MRouteINET6TestTemplate):
+     """Basic multicast routing setup with 2 hosts connected via a router."""
+ 
+@@ -343,12 +407,7 @@ class Test1RBasicINET6(MRouteINET6TestTemplate):
+         self.waittest()
+ 
+ 
+-class Test1RCrissCrossINET6(MRouteINET6TestTemplate):
+-    """
+-    Test a router connected to four hosts, with pairs of interfaces
+-    in different FIBs.
+-    """
+-
++class MRouteINET6CrissCrossTestTemplate(MRouteINET6TestTemplate):
+     TOPOLOGY = {
+         "vnet_router": {"ifaces": ["if1", "if2", "if3", "if4"]},
+         "vnet_host1": {"ifaces": ["if1"]},
+@@ -374,6 +433,74 @@ class Test1RCrissCrossINET6(MRouteINET6TestTemplate):
+     }
+     MULTICAST_ADDR = "ff05::1"
+ 
++
++class Test1RCrissCrossINET6MissingRouter(MRouteINET6CrissCrossTestTemplate):
++    """
++    Test what happens when a router is configured for some FIBs but not others.
++    """
++
++    def setup_method(self, method):
++        # Create VNETs and start the handlers.
++        super().setup_method(method)
++
++        # Only start an ip6_mrouted instance in FIB 0.
++        ifaces = [self.vnet.iface_alias_map[i].name for i in ["if1", "if2"]]
++        self.mrouted0 = self.run_ip6_mrouted("test0", ifaces, fib=0)
++        time.sleep(1)  # Give ip6_mrouted a bit of time to get itself together.
++
++    def vnet_host1_handler(self, vnet):
++        self.jointest(vnet)
++
++        self.sock = self.mcast_join(self.MULTICAST_ADDR, 12345, vnet.ifaces[0].name)
++        self._msgwait(self.sock, b"Hello, Multicast on FIB 0!")
++        self.mcast_sendto(self.MULTICAST_ADDR, 12345, vnet.ifaces[0].name,
++                          b"Goodbye, Multicast on FIB 0!")
++        self.donetest()
++
++    def vnet_host2_handler(self, vnet):
++        self.jointest(vnet)
++        self.sock = self.mcast_join(self.MULTICAST_ADDR, 12345, vnet.ifaces[0].name)
++        self.mcast_sendto(self.MULTICAST_ADDR, 12345, vnet.ifaces[0].name,
++                          b"Hello, Multicast on FIB 0!")
++        self._msgwait(self.sock, b"Hello, Multicast on FIB 0!")
++        self._msgwait(self.sock, b"Goodbye, Multicast on FIB 0!")
++        self.donetest()
++
++    def vnet_host3_handler(self, vnet):
++        self.jointest(vnet)
++
++        self.sock = self.mcast_join(self.MULTICAST_ADDR, 12345,
++                                    vnet.ifaces[0].name)
++        timedout = False
++        try:
++            self._msgwait(self.sock, b"Hello, Multicast on FIB 1!", timeout=5)
++        except socket.timeout:
++            timedout = True
++        assert timedout, "Received a message when we shouldn't have"
++        self.donetest()
++
++    def vnet_host4_handler(self, vnet):
++        self.jointest(vnet)
++
++        self.sock = self.mcast_join(self.MULTICAST_ADDR, 12345,
++                                    vnet.ifaces[0].name)
++        self.mcast_sendto(self.MULTICAST_ADDR, 12345, vnet.ifaces[0].name,
++                          b"Hello, Multicast on FIB 1!")
++        self.donetest()
++
++    @pytest.mark.require_user("root")
++    @pytest.mark.timeout(30)
++    def test(self):
++        self.starttest(["vnet_host1", "vnet_host2", "vnet_host3", "vnet_host4"])
++        self.waittest()
++
++
++class Test1RCrissCrossINET6(MRouteINET6CrissCrossTestTemplate):
++    """
++    Test a router connected to four hosts, with pairs of interfaces
++    in different FIBs.
++    """
++
+     def setup_method(self, method):
+         # Create VNETs and start the handlers.
+         super().setup_method(method)

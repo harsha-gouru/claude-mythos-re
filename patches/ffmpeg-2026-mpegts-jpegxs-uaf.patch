@@ -1,0 +1,47 @@
+commit 42692d0f571f335174049e06c855b20340d73e6d
+Author: Nicholas Carlini <nicholas@carlini.com>
+Date:   Sat Mar 14 15:39:51 2026 +0000
+
+    avformat/mpegts: remove JPEG-XS early return on invalid header_size
+    
+    new_pes_packet() moves a buffer with pkt->buf = pes->buffer before
+    JPEG-XS validation. If header_size > pkt->size, an early return leaves
+    pes->buffer as a stale alias of pkt->buf with refcount 1. Later,
+    mpegts_read_packet() calls av_packet_unref(), freeing the buffer
+    through pkt->buf. The flush loop then re-enters new_pes_packet() and
+    dereferences the dangling pes->buffer; a second path hits it via
+    av_buffer_unref() in handle_packets() after a seek.
+    
+    Drop the early return. The packet is delivered with AV_PKT_FLAG_CORRUPT
+    set, matching the PES-size-mismatch case above, and the function falls
+    through to the normal cleanup path. The else guards the header trim so
+    pkt->data/pkt->size stay valid for the memset.
+    
+    Fixes: use after free
+    Fixes regression since 16f89d342e.
+    
+    Found-by: Nicholas Carlini <nicholas@carlini.com>
+    (cherry picked from commit 55bf0e6cd5a46b26b0ebd2374ad2625a7133e4ee)
+    Signed-off-by: Michael Niedermayer <michael@niedermayer.cc>
+---
+ libavformat/mpegts.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/libavformat/mpegts.c b/libavformat/mpegts.c
+index 0ee10f9a77..bfbdbf5b19 100644
+--- a/libavformat/mpegts.c
++++ b/libavformat/mpegts.c
+@@ -1041,10 +1041,10 @@ static int new_pes_packet(PESContext *pes, AVPacket *pkt)
+                    "Invalid JPEG-XS header size %"PRIu32" > packet size %d\n",
+                    header_size, pkt->size);
+             pes->flags |= AV_PKT_FLAG_CORRUPT;
+-            return AVERROR_INVALIDDATA;
++        } else {
++            pkt->data += header_size;
++            pkt->size -= header_size;
+         }
+-        pkt->data += header_size;
+-        pkt->size -= header_size;
+     }
+ 
+     memset(pkt->data + pkt->size, 0, AV_INPUT_BUFFER_PADDING_SIZE);

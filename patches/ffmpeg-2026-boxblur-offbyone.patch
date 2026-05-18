@@ -1,0 +1,30 @@
+commit 444f2cf047b92fac8d470f969dbd04bf1107757c
+Author: David Korczynski <David@Adalogics.com>
+Date:   Sat May 16 16:52:36 2026 +0200
+
+    avfilter/boxblur: Fix off by one errors
+    
+    Fixes: ada-2-poc.mkv
+    
+    Found-by: Claude and Ada Logics. This issue was found by Anthropic from using agents to study security of open source projects, and I am from Ada Logics helping validate the found issues and report to maintainers.
+    Signed-off-by: Michael Niedermayer <michael@niedermayer.cc>
+---
+ libavfilter/boxblur.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/libavfilter/boxblur.c b/libavfilter/boxblur.c
+index 43c724daea..51029b93b4 100644
+--- a/libavfilter/boxblur.c
++++ b/libavfilter/boxblur.c
+@@ -114,9 +114,9 @@ int ff_boxblur_eval_filter_params(AVFilterLink *inlink,
+ 
+ #define CHECK_RADIUS_VAL(w_, h_, comp)                                  \
+     if (comp->radius < 0 ||                                   \
+-        2*comp->radius > FFMIN(w_, h_)) {                     \
++        2*comp->radius >= FFMIN(w_, h_)) {                              \
+         av_log(ctx, AV_LOG_ERROR,                                       \
+-               "Invalid " #comp " radius value %d, must be >= 0 and <= %d\n", \
++               "Invalid " #comp " radius value %d, must be >= 0 and < %d\n", \
+                comp->radius, FFMIN(w_, h_)/2);                \
+         return AVERROR(EINVAL);                                         \
+     }

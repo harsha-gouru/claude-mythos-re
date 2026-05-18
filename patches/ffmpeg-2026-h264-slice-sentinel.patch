@@ -1,0 +1,45 @@
+commit a5696b44a6f692118f5ebf6e420f0158971e9345
+Author: Nicholas Carlini <nicholas@carlini.com>
+Date:   Sat Mar 14 04:47:53 2026 +0000
+
+    avcodec/h264_slice: reject slice_num >= 0xFFFF
+    
+    An H.264 picture with 65536 slices makes slice_num collide with the
+    slice_table sentinel. slice_table is uint16_t, initialized via
+    memset(..., -1, ...) so spare entries (one per row, mb_stride =
+    mb_width + 1) stay 0xFFFF. slice_num is an uncapped ++h->current_slice.
+    At slice 65535 the collision makes slice_table[spare] == slice_num
+    pass, defeating the deblock_topleft check in xchg_mb_border and the
+    top_type zeroing in fill_decode_caches.
+    
+    With both guards bypassed at mb_x = 0, top_borders[top_idx][-1]
+    underflows 96 bytes and XCHG writes at -88 below the allocation
+    (plus -72 and -56 for chroma in the non-444 path).
+    
+    Fixes: heap-buffer-overflow
+    
+    Found-by: Nicholas Carlini <nicholas@carlini.com>
+    Signed-off-by: Michael Niedermayer <michael@niedermayer.cc>
+    (cherry picked from commit 39e1969303a0b9ec5fb5f5eb643bf7a5b69c0a89)
+    Signed-off-by: Michael Niedermayer <michael@niedermayer.cc>
+---
+ libavcodec/h264_slice.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/libavcodec/h264_slice.c b/libavcodec/h264_slice.c
+index 69f70c90bb..0ce8e46c72 100644
+--- a/libavcodec/h264_slice.c
++++ b/libavcodec/h264_slice.c
+@@ -1979,6 +1979,12 @@ static int h264_slice_init(H264Context *h, H264SliceContext *sl,
+                           h->ps.pps->chroma_qp_index_offset[1]) +
+                    6 * (h->ps.sps->bit_depth_luma - 8);
+ 
++    // slice_table is uint16_t initialized to 0xFFFF as a sentinel.
++    if (h->current_slice >= 0xFFFE) {
++        av_log(h->avctx, AV_LOG_ERROR, "Too many slices (%d)\n", h->current_slice + 1);
++        return AVERROR_PATCHWELCOME;
++    }
++
+     sl->slice_num       = ++h->current_slice;
+ 
+     if (sl->slice_num)

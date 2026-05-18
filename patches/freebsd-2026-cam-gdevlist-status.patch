@@ -1,0 +1,46 @@
+commit 3454d97aaec12f4a8c676c34182200471eecae24
+Author: Warner Losh <imp@FreeBSD.org>
+Date:   Fri Apr 24 12:31:13 2026 -0600
+
+    cam: Set ccb_h.status on XPT_GDEVLIST early-return paths
+    
+    XPT_GDEVLIST in xpt_action_default has two early-return paths (list
+    changed and index not found) that set cgdl->status but not ccb_h.status.
+    Since xpt_action sets ccb_h.status to CAM_REQ_INPROG before dispatching,
+    and XPT_GDEVLIST is an non-queued CCB, cam_periph_ccbwait skips the
+    sleep loop and immediately hits the KASSERT checking that status !=
+    CAM_REQ_INPROG, causing a panic.
+    
+    Set ccb_h.status = CAM_REQ_CMP at the top of the code rather than the
+    bottom. Any future error paths will be right (since this command can't
+    fail at the command level, just in the status of the data level).
+    
+    PR:                     293899
+    Assisted-By:            Claude Opus 4.6 (1M context)
+    Sponsored by:           Netflix
+    Reviewed by:            jhb
+    Differential Revision:  https://reviews.freebsd.org/D56487
+---
+ sys/cam/cam_xpt.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sys/cam/cam_xpt.c b/sys/cam/cam_xpt.c
+index f43dde8de40..605f4d8c3cf 100644
+--- a/sys/cam/cam_xpt.c
++++ b/sys/cam/cam_xpt.c
+@@ -2779,6 +2779,7 @@ call_sim:
+ 		device = path->device;
+ 		periph_head = &device->periphs;
+ 		cgdl = &start_ccb->cgdl;
++		start_ccb->ccb_h.status = CAM_REQ_CMP;
+ 
+ 		/*
+ 		 * Check and see if the list has changed since the user
+@@ -2820,7 +2821,6 @@ call_sim:
+ 		cgdl->index++;
+ 		cgdl->generation = device->generation;
+ 
+-		cgdl->ccb_h.status = CAM_REQ_CMP;
+ 		break;
+ 	}
+ 	case XPT_DEV_MATCH:
