@@ -1,0 +1,104 @@
+From 1faddd640edc8195c1fb7cb3904876e434ecab87 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Tobias=20Frauenschl=C3=A4ger?= <tobias@wolfssl.com>
+Date: Mon, 30 Mar 2026 12:10:58 +0200
+Subject: [PATCH] evp: verify Poly1305 tag on ChaCha20-Poly1305 decrypt
+
+EVP_DecryptFinal_ex() called wc_ChaCha20Poly1305_Final() which only
+computes the Poly1305 tag, writing it into ctx->authTag and
+overwriting the expected tag stored there by EVP_CTRL_AEAD_SET_TAG.
+No comparison was ever performed, so any forged tag was accepted.
+
+Fix: save the expected tag before calling Final(), then verify with
+wc_ChaCha20Poly1305_CheckTag() on the decrypt path, mirroring the
+existing AES-GCM branch. Add a regression test that asserts
+EVP_DecryptFinal_ex() rejects an all-zero forged tag.
+
+Reported-by: Nicholas Carlini (Anthropic) & Bronson Yen (Calif.io)
+---
+ tests/api/test_evp_cipher.c | 23 +++++++++++++++++++++++
+ wolfcrypt/src/evp.c         | 25 +++++++++++++++++++++----
+ 2 files changed, 44 insertions(+), 4 deletions(-)
+
+diff --git a/tests/api/test_evp_cipher.c b/tests/api/test_evp_cipher.c
+index b4e37df7a28..1e88da9979c 100644
+--- a/tests/api/test_evp_cipher.c
++++ b/tests/api/test_evp_cipher.c
+@@ -1915,6 +1915,7 @@ int test_wolfssl_EVP_chacha20_poly1305(void)
+     byte cipherText[sizeof(plainText)];
+     byte decryptedText[sizeof(plainText)];
+     byte tag[CHACHA20_POLY1305_AEAD_AUTHTAG_SIZE];
++    byte badTag[CHACHA20_POLY1305_AEAD_AUTHTAG_SIZE];
+     EVP_CIPHER_CTX* ctx = NULL;
+     int outSz;
+ 
+@@ -1979,6 +1980,28 @@ int test_wolfssl_EVP_chacha20_poly1305(void)
+     EVP_CIPHER_CTX_free(ctx);
+     ctx = NULL;
+ 
++    /* Negative test: forged (all-zero) tag must be rejected. */
++    XMEMSET(badTag, 0, sizeof(badTag));
++    ExpectNotNull((ctx = EVP_CIPHER_CTX_new()));
++    ExpectIntEQ(EVP_DecryptInit_ex(ctx, EVP_chacha20_poly1305(), NULL,
++                NULL, NULL), WOLFSSL_SUCCESS);
++    ExpectIntEQ(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN,
++                CHACHA20_POLY1305_AEAD_IV_SIZE, NULL), WOLFSSL_SUCCESS);
++    ExpectIntEQ(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG,
++                CHACHA20_POLY1305_AEAD_AUTHTAG_SIZE, badTag),
++                WOLFSSL_SUCCESS);
++    ExpectIntEQ(EVP_DecryptInit_ex(ctx, NULL, NULL, key, iv),
++                WOLFSSL_SUCCESS);
++    ExpectIntEQ(EVP_DecryptUpdate(ctx, NULL, &outSz, aad, sizeof(aad)),
++                WOLFSSL_SUCCESS);
++    ExpectIntEQ(EVP_DecryptUpdate(ctx, decryptedText, &outSz, cipherText,
++                sizeof(cipherText)), WOLFSSL_SUCCESS);
++    /* EVP_DecryptFinal_ex MUST return failure on tag mismatch */
++    ExpectIntNE(EVP_DecryptFinal_ex(ctx, decryptedText, &outSz),
++                WOLFSSL_SUCCESS);
++    EVP_CIPHER_CTX_free(ctx);
++    ctx = NULL;
++
+     /* Test partial Inits. CipherInit() allow setting of key and iv
+      * in separate calls. */
+     ExpectNotNull((ctx = EVP_CIPHER_CTX_new()));
+diff --git a/wolfcrypt/src/evp.c b/wolfcrypt/src/evp.c
+index fc4f68eb9fc..121d926555f 100644
+--- a/wolfcrypt/src/evp.c
++++ b/wolfcrypt/src/evp.c
+@@ -1499,16 +1499,33 @@ int wolfSSL_EVP_CipherFinal(WOLFSSL_EVP_CIPHER_CTX *ctx, unsigned char *out,
+         * HAVE_FIPS_VERSION >= 2 */
+ #if defined(HAVE_CHACHA) && defined(HAVE_POLY1305)
+         case WC_CHACHA20_POLY1305_TYPE:
++        {
++            byte computedTag[CHACHA20_POLY1305_AEAD_AUTHTAG_SIZE];
++            if (!ctx->enc) {
++                /* Save the expected tag before _Final() overwrites
++                 * ctx->authTag */
++                XMEMCPY(computedTag, ctx->authTag, sizeof(computedTag));
++            }
+             if (wc_ChaCha20Poly1305_Final(&ctx->cipher.chachaPoly,
+                                           ctx->authTag) != 0) {
+                 WOLFSSL_MSG("wc_ChaCha20Poly1305_Final failed");
+                 return WOLFSSL_FAILURE;
+             }
+-            else {
+-                *outl = 0;
+-                return WOLFSSL_SUCCESS;
++            if (!ctx->enc) {
++                /* ctx->authTag now holds computed tag; computedTag holds
++                 * expected */
++                int tagErr = wc_ChaCha20Poly1305_CheckTag(computedTag,
++                                                          ctx->authTag);
++                ForceZero(computedTag, sizeof(computedTag));
++                if (tagErr != 0) {
++                    WOLFSSL_MSG("ChaCha20-Poly1305 tag mismatch");
++                    return WOLFSSL_FAILURE;
++                }
+             }
+-            break;
++            *outl = 0;
++            return WOLFSSL_SUCCESS;
++        }
++        break;
+ #endif
+ #ifdef WOLFSSL_SM4_GCM
+         case WC_SM4_GCM_TYPE:

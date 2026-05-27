@@ -1,0 +1,28 @@
+From 4a065a941ae134a0433d1497c03b3c3eb91b9f85 Mon Sep 17 00:00:00 2001
+From: Armin Novak <armin.novak@thincast.com>
+Date: Thu, 30 Apr 2026 15:03:21 +0200
+Subject: [PATCH] [codec,planar] fix bounds checks
+
+---
+ libfreerdp/codec/planar.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/libfreerdp/codec/planar.c b/libfreerdp/codec/planar.c
+index c672595b1302..46490a6be207 100644
+--- a/libfreerdp/codec/planar.c
++++ b/libfreerdp/codec/planar.c
+@@ -966,12 +966,12 @@ BOOL freerdp_bitmap_decompress_planar(BITMAP_PLANAR_CONTEXT* WINPR_RESTRICT plan
+ 				return FALSE;
+ 			}
+ 
+-			if ((nXDst + nSrcWidth) * bpp > nDstStep)
++			if ((nXDst + nSrcWidth) * bpp > nTempStep)
+ 			{
+ 				WLog_ERR(TAG,
+ 				         "planar plane destination (X %" PRIu32 " + width %" PRIu32
+ 				         ") * bpp %" PRIu32 " exceeds stride %" PRIu32,
+-				         nXDst, nSrcWidth, bpp, nDstStep);
++				         nXDst, nSrcWidth, bpp, nTempStep);
+ 				return FALSE;
+ 			}
+ 

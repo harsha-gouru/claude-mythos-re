@@ -1,0 +1,79 @@
+From 6495e8e94115f7f6beb67497e07bac5cba8dca9c Mon Sep 17 00:00:00 2001
+From: Eric Blankenhorn <eric@wolfssl.com>
+Date: Tue, 31 Mar 2026 08:31:14 -0500
+Subject: [PATCH 1/2] Fix ARIA build issue and FIPS guard
+
+---
+ src/internal.c | 21 ++++++++++++++++-----
+ 1 file changed, 16 insertions(+), 5 deletions(-)
+
+diff --git a/src/internal.c b/src/internal.c
+index 516f7ccc683..70a7f42569d 100644
+--- a/src/internal.c
++++ b/src/internal.c
+@@ -19714,7 +19714,9 @@ static int DoDtlsHandShakeMsg(WOLFSSL* ssl, byte* input, word32* inOutIdx,
+ #if (!defined(NO_PUBLIC_GCM_SET_IV) && \
+     ((defined(HAVE_FIPS) || defined(HAVE_SELFTEST)) && \
+     (!defined(HAVE_FIPS_VERSION) || (HAVE_FIPS_VERSION < 2)))) || \
+-    (defined(HAVE_POLY1305) && defined(HAVE_CHACHA))
++    (defined(HAVE_POLY1305) && defined(HAVE_CHACHA)) || \
++    defined(HAVE_ARIA) || \
++    defined(WOLFSSL_SM4_GCM) || defined(WOLFSSL_SM4_CCM)
+ static WC_INLINE void AeadIncrementExpIV(WOLFSSL* ssl)
+ {
+     int i;
+@@ -20701,10 +20703,9 @@ static WC_INLINE int Encrypt(WOLFSSL* ssl, byte* out, const byte* input,
+                 sizeof(ssl->encrypt.sanityCheck));
+         #endif
+ 
+-        #if defined(BUILD_AESGCM) || defined(HAVE_AESCCM) || defined(HAVE_ARIA)
++        #if defined(BUILD_AESGCM) || defined(HAVE_AESCCM)
+             if (ssl->specs.bulk_cipher_algorithm == wolfssl_aes_ccm ||
+-                ssl->specs.bulk_cipher_algorithm == wolfssl_aes_gcm ||
+-                ssl->specs.bulk_cipher_algorithm == wolfssl_aria_gcm)
++                ssl->specs.bulk_cipher_algorithm == wolfssl_aes_gcm)
+             {
+                 /* finalize authentication cipher */
+ #if !defined(NO_PUBLIC_GCM_SET_IV) && \
+@@ -20715,7 +20716,17 @@ static WC_INLINE int Encrypt(WOLFSSL* ssl, byte* out, const byte* input,
+                 if (ssl->encrypt.nonce)
+                     ForceZero(ssl->encrypt.nonce, AESGCM_NONCE_SZ);
+             }
+-        #endif /* BUILD_AESGCM || HAVE_AESCCM || HAVE_ARIA */
++        #endif /* BUILD_AESGCM || HAVE_AESCCM */
++        #ifdef HAVE_ARIA
++            if (ssl->specs.bulk_cipher_algorithm == wolfssl_aria_gcm)
++            {
++                /* finalize authentication cipher — wc_AriaEncrypt is
++                 * stateless, so the explicit IV must always advance */
++                AeadIncrementExpIV(ssl);
++                if (ssl->encrypt.nonce)
++                    ForceZero(ssl->encrypt.nonce, AESGCM_NONCE_SZ);
++            }
++        #endif /* HAVE_ARIA */
+         #if defined(WOLFSSL_SM4_GCM) || defined(WOLFSSL_SM4_CCM)
+             if (ssl->specs.bulk_cipher_algorithm == wolfssl_sm4_ccm ||
+                 ssl->specs.bulk_cipher_algorithm == wolfssl_sm4_gcm)
+
+From a3fad2af91da39e2a4bdaf528bcfb2a94c4dd67c Mon Sep 17 00:00:00 2001
+From: Eric Blankenhorn <eric@wolfssl.com>
+Date: Tue, 31 Mar 2026 09:35:43 -0500
+Subject: [PATCH 2/2] Fix feedback from review
+
+---
+ src/internal.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/internal.c b/src/internal.c
+index 70a7f42569d..f602903a538 100644
+--- a/src/internal.c
++++ b/src/internal.c
+@@ -20720,7 +20720,7 @@ static WC_INLINE int Encrypt(WOLFSSL* ssl, byte* out, const byte* input,
+         #ifdef HAVE_ARIA
+             if (ssl->specs.bulk_cipher_algorithm == wolfssl_aria_gcm)
+             {
+-                /* finalize authentication cipher — wc_AriaEncrypt is
++                /* finalize authentication cipher -- wc_AriaEncrypt is
+                  * stateless, so the explicit IV must always advance */
+                 AeadIncrementExpIV(ssl);
+                 if (ssl->encrypt.nonce)

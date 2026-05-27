@@ -1,0 +1,777 @@
+From 452652bbce3ffcbed353e69db0b2884b790c0f8b Mon Sep 17 00:00:00 2001
+From: Paul Adelsbach <paul.adelsbach@wolfssl.com>
+Date: Thu, 26 Mar 2026 11:08:10 -0700
+Subject: [PATCH 1/2] Add bounds check on wolfSSL_X509_notBefore and
+ wolfSSL_X509_notAfter
+
+---
+ src/internal.c          | 70 ++++++++++++++++++-----------------------
+ src/ssl_api_crl_ocsp.c  |  2 +-
+ src/x509.c              | 24 ++++++++++++--
+ wolfssl/internal.h      | 10 +-----
+ wolfssl/wolfcrypt/asn.h |  2 +-
+ 5 files changed, 56 insertions(+), 52 deletions(-)
+
+diff --git a/src/internal.c b/src/internal.c
+index 516f7ccc683..d59559112c1 100644
+--- a/src/internal.c
++++ b/src/internal.c
+@@ -13743,11 +13743,34 @@ static int CopyREQAttributes(WOLFSSL_X509* x509, DecodedCert* dCert)
+ }
+ #endif /* WOLFSSL_CERT_REQ */
+ 
++/* Copy an ASN-encoded date (type + length + data) into a WOLFSSL_ASN1_TIME.
++ * srcDate: ASN date buffer where [0]=type, [1]=length, [2..]=date bytes.
++ * srcDateLen: total length of srcDate (0 means no date present). */
++static void CopyDateToASN1_TIME(const byte* srcDate, int srcDateLen,
++                                WOLFSSL_ASN1_TIME* dst)
++{
++    if (srcDateLen >= 2) {
++        /* Clamp the date length to the maximum allowed size.
++         * This needs to match the size of WOLFSSL_ASN1_TIME minus the 
++         * the type and length fields. */
++        const int maxSz = CTC_DATE_SIZE - 2;
++        const int copySz = (int)min(srcDate[1], maxSz);
++        dst->type = srcDate[0];
++        dst->length = copySz;
++        XMEMCPY(dst->data, &srcDate[2], copySz);
++    }
++    else {
++        dst->length = 0;
++    }
++}
++
+ /* Copy parts X509 needs from Decoded cert, 0 on success */
+ int CopyDecodedToX509(WOLFSSL_X509* x509, DecodedCert* dCert)
+ {
+     int ret = 0;
++#ifdef WOLFSSL_SEP
+     int minSz;
++#endif
+ 
+     if (x509 == NULL || dCert == NULL ||
+         dCert->subjectCNLen < 0)
+@@ -13820,22 +13843,10 @@ int CopyDecodedToX509(WOLFSSL_X509* x509, DecodedCert* dCert)
+         x509->hwSerialNumSz = 0;
+ #endif /* WOLFSSL_SEP */
+ 
+-    if (dCert->beforeDateLen > 0) {
+-        minSz = (int)min(dCert->beforeDate[1], MAX_DATE_SZ);
+-        x509->notBefore.type = dCert->beforeDate[0];
+-        x509->notBefore.length = minSz;
+-        XMEMCPY(x509->notBefore.data, &dCert->beforeDate[2], minSz);
+-    }
+-    else
+-        x509->notBefore.length = 0;
+-    if (dCert->afterDateLen > 0) {
+-        minSz = (int)min(dCert->afterDate[1], MAX_DATE_SZ);
+-        x509->notAfter.type = dCert->afterDate[0];
+-        x509->notAfter.length = minSz;
+-        XMEMCPY(x509->notAfter.data, &dCert->afterDate[2], minSz);
+-    }
+-    else
+-        x509->notAfter.length = 0;
++    CopyDateToASN1_TIME(dCert->beforeDate, dCert->beforeDateLen,
++        &x509->notBefore);
++    CopyDateToASN1_TIME(dCert->afterDate, dCert->afterDateLen,
++        &x509->notAfter);
+ 
+     if (dCert->publicKey != NULL && dCert->pubKeySize != 0) {
+         x509->pubKey.buffer = (byte*)XMALLOC(
+@@ -14217,29 +14228,10 @@ int CopyDecodedAcertToX509(WOLFSSL_X509_ACERT* x509, DecodedAcert* dAcert)
+     }
+ 
+     /* Copy before and after dates. */
+-    {
+-        int minSz = 0;
+-
+-        if (dAcert->beforeDateLen > 0) {
+-            minSz = (int)min(dAcert->beforeDate[1], MAX_DATE_SZ);
+-            x509->notBefore.type = dAcert->beforeDate[0];
+-            x509->notBefore.length = minSz;
+-            XMEMCPY(x509->notBefore.data, &dAcert->beforeDate[2], minSz);
+-        }
+-        else {
+-            x509->notBefore.length = 0;
+-        }
+-
+-        if (dAcert->afterDateLen > 0) {
+-            minSz = (int)min(dAcert->afterDate[1], MAX_DATE_SZ);
+-            x509->notAfter.type = dAcert->afterDate[0];
+-            x509->notAfter.length = minSz;
+-            XMEMCPY(x509->notAfter.data, &dAcert->afterDate[2], minSz);
+-        }
+-        else {
+-            x509->notAfter.length = 0;
+-        }
+-    }
++    CopyDateToASN1_TIME(dAcert->beforeDate, dAcert->beforeDateLen,
++        &x509->notBefore);
++    CopyDateToASN1_TIME(dAcert->afterDate, dAcert->afterDateLen,
++        &x509->notAfter);
+ 
+     /* Copy the signature. */
+     if (dAcert->signature != NULL && dAcert->sigLength != 0 &&
+diff --git a/src/ssl_api_crl_ocsp.c b/src/ssl_api_crl_ocsp.c
+index 0bd3237c66d..677aad46812 100644
+--- a/src/ssl_api_crl_ocsp.c
++++ b/src/ssl_api_crl_ocsp.c
+@@ -424,7 +424,7 @@ int wolfSSL_get_ocsp_producedDate_tm(WOLFSSL *ssl, struct tm *produced_tm) {
+ 
+     if (ExtractDate(ssl->ocspProducedDate,
+             (unsigned char)ssl->ocspProducedDateFormat, produced_tm, &idx,
+-            MAX_DATE_SZ))
++            MAX_DATE_SIZE))
+         return 0;
+     else
+         return ASN_PARSE_E;
+diff --git a/src/x509.c b/src/x509.c
+index 8fc8edc57b6..48720eda71d 100644
+--- a/src/x509.c
++++ b/src/x509.c
+@@ -4419,8 +4419,14 @@ const byte* wolfSSL_X509_notBefore(WOLFSSL_X509* x509)
+ {
+     WOLFSSL_ENTER("wolfSSL_X509_notBefore");
+ 
+-    if (x509 == NULL)
++    if (x509 == NULL) {
+         return NULL;
++    }
++
++    if (x509->notBefore.length < 0 ||
++            x509->notBefore.length > (int)sizeof(x509->notBeforeData) - 2) {
++        return NULL;
++    }
+ 
+     XMEMSET(x509->notBeforeData, 0, sizeof(x509->notBeforeData));
+     x509->notBeforeData[0] = (byte)x509->notBefore.type;
+@@ -4437,8 +4443,14 @@ const byte* wolfSSL_X509_notAfter(WOLFSSL_X509* x509)
+ {
+     WOLFSSL_ENTER("wolfSSL_X509_notAfter");
+ 
+-    if (x509 == NULL)
++    if (x509 == NULL) {
++        return NULL;
++    }
++
++    if (x509->notAfter.length < 0 ||
++            x509->notAfter.length > (int)sizeof(x509->notAfterData) - 2) {
+         return NULL;
++    }
+ 
+     XMEMSET(x509->notAfterData, 0, sizeof(x509->notAfterData));
+     x509->notAfterData[0] = (byte)x509->notAfter.type;
+@@ -16060,6 +16072,10 @@ int wolfSSL_X509_set_notAfter(WOLFSSL_X509* x509, const WOLFSSL_ASN1_TIME* t)
+         return WOLFSSL_FAILURE;
+     }
+ 
++    if (t->length < 0 || t->length > CTC_DATE_SIZE - 2) {
++        return WOLFSSL_FAILURE;
++    }
++
+     x509->notAfter.type = t->type;
+     x509->notAfter.length = t->length;
+ 
+@@ -16074,6 +16090,10 @@ int wolfSSL_X509_set_notBefore(WOLFSSL_X509* x509, const WOLFSSL_ASN1_TIME* t)
+         return WOLFSSL_FAILURE;
+     }
+ 
++    if (t->length < 0 || t->length > CTC_DATE_SIZE - 2) {
++        return WOLFSSL_FAILURE;
++    }
++
+     x509->notBefore.type = t->type;
+     x509->notBefore.length = t->length;
+ 
+diff --git a/wolfssl/internal.h b/wolfssl/internal.h
+index 216b75bde1c..53981450e88 100644
+--- a/wolfssl/internal.h
++++ b/wolfssl/internal.h
+@@ -2471,10 +2471,6 @@ struct WOLFSSL_OCSP {
+ };
+ #endif
+ 
+-#ifndef MAX_DATE_SIZE
+-#define MAX_DATE_SIZE 32
+-#endif
+-
+ typedef struct CRL_Entry CRL_Entry;
+ 
+ #if defined(WOLFSSL_SM2) && defined(WOLFSSL_SM3)
+@@ -5312,10 +5308,6 @@ typedef struct Arrays {
+     #endif
+ #endif
+ 
+-#ifndef MAX_DATE_SZ
+-#define MAX_DATE_SZ 32
+-#endif
+-
+ typedef enum {
+     STACK_TYPE_X509               = 0,
+     STACK_TYPE_GEN_NAME           = 1,
+@@ -6327,7 +6319,7 @@ struct WOLFSSL {
+ #endif /* HAVE_TLS_EXTENSIONS */
+ #ifdef HAVE_OCSP
+         void*       ocspIOCtx;
+-        byte ocspProducedDate[MAX_DATE_SZ];
++        byte ocspProducedDate[MAX_DATE_SIZE];
+         int ocspProducedDateFormat;
+         buffer      ocspCsrResp[1 + MAX_CHAIN_DEPTH];
+     #if defined(OPENSSL_ALL) || defined(WOLFSSL_NGINX) || defined(WOLFSSL_HAPROXY)
+diff --git a/wolfssl/wolfcrypt/asn.h b/wolfssl/wolfcrypt/asn.h
+index 08dab649ae0..6c04b4d2c01 100644
+--- a/wolfssl/wolfcrypt/asn.h
++++ b/wolfssl/wolfcrypt/asn.h
+@@ -1272,7 +1272,7 @@ enum Misc_ASN {
+     DSA_PARAM_INTS      =   3,     /* DSA parameter ints */
+     RSA_PUB_INTS        =   2,     /* RSA ints in public key */
+     MIN_DATE_SIZE       =  12,
+-    MAX_DATE_SIZE       =  32,
++    MAX_DATE_SIZE       =  CTC_DATE_SIZE,
+     ASN_GEN_TIME_SZ     =  15,     /* 7 numbers * 2 + Zulu tag */
+ 
+ #ifdef WOLFSSL_CERT_GEN
+
+From ec9b6cf4699f77c80d9282cf520d04d8e480737c Mon Sep 17 00:00:00 2001
+From: Paul Adelsbach <paul.adelsbach@wolfssl.com>
+Date: Mon, 30 Mar 2026 11:31:31 -0700
+Subject: [PATCH 2/2] Add test cases
+
+---
+ .github/workflows/cmake.yml |   2 +-
+ src/internal.c              |   2 +-
+ tests/api/test_ossl_x509.c  | 214 +++++++++++++++++++++---------------
+ tests/api/test_ossl_x509.h  |   6 +-
+ tests/api/test_x509.c       | 198 +++++++++++++++++++++++++++++++++
+ tests/api/test_x509.h       |   4 +-
+ 6 files changed, 330 insertions(+), 96 deletions(-)
+
+diff --git a/.github/workflows/cmake.yml b/.github/workflows/cmake.yml
+index 8570fb5cac6..c014360d967 100644
+--- a/.github/workflows/cmake.yml
++++ b/.github/workflows/cmake.yml
+@@ -76,7 +76,7 @@ jobs:
+             -DWOLFSSL_EXTRA_PQC_HYBRIDS:BOOL=yes -DWOLFSSL_TLS_NO_MLKEM_STANDALONE:BOOL=no \
+             ..
+         cmake --build .
+-        ctest -j $(nproc)
++        ctest -j $(nproc) --output-on-failure
+         cmake --install .
+ 
+         # clean up
+diff --git a/src/internal.c b/src/internal.c
+index d59559112c1..4030f8bcea9 100644
+--- a/src/internal.c
++++ b/src/internal.c
+@@ -13751,7 +13751,7 @@ static void CopyDateToASN1_TIME(const byte* srcDate, int srcDateLen,
+ {
+     if (srcDateLen >= 2) {
+         /* Clamp the date length to the maximum allowed size.
+-         * This needs to match the size of WOLFSSL_ASN1_TIME minus the 
++         * This needs to match the size of WOLFSSL_ASN1_TIME minus the
+          * the type and length fields. */
+         const int maxSz = CTC_DATE_SIZE - 2;
+         const int copySz = (int)min(srcDate[1], maxSz);
+diff --git a/tests/api/test_ossl_x509.c b/tests/api/test_ossl_x509.c
+index c386c004e8a..b918a1f1438 100644
+--- a/tests/api/test_ossl_x509.c
++++ b/tests/api/test_ossl_x509.c
+@@ -663,124 +663,160 @@ int test_wolfSSL_X509_set_name(void)
+     return EXPECT_RESULT();
+ }
+ 
+-int test_wolfSSL_X509_set_notAfter(void)
++int test_wolfSSL_X509_set_notAfterBefore(void)
+ {
+     EXPECT_DECLS;
+ #if (defined(OPENSSL_ALL) || defined(WOLFSSL_APACHE_HTTPD)) \
+     && !defined(NO_ASN_TIME) && !defined(USER_TIME) && \
+     !defined(TIME_OVERRIDES) && !defined(NO_CERTS) && \
+-    defined(WOLFSSL_CERT_GEN) && defined(WOLFSSL_CERT_REQ) &&\
+-    !defined(TIME_T_NOT_64BIT) && !defined(NO_64BIT) && !defined(NO_BIO)
+-    /* Generalized time will overflow time_t if not long */
++    defined(WOLFSSL_CERT_GEN) && defined(WOLFSSL_CERT_REQ) && !defined(NO_BIO)
+     X509* x = NULL;
+     BIO*  bio = NULL;
+-    ASN1_TIME *asn_time = NULL;
+-    ASN1_TIME *time_check = NULL;
+-    const int year = 365*24*60*60;
+-    const int day  = 24*60*60;
+-    const int hour = 60*60;
++    ASN1_TIME* asn_time = NULL;
++    ASN1_TIME* time_check = NULL;
++    WOLFSSL_ASN1_TIME crafted_time;
++    WOLFSSL_ASN1_TIME* retrieved = NULL;
++    const byte* raw = NULL;
++    const int year = 365 * 24 * 60 * 60;
++    const int day  = 24 * 60 * 60;
++    const int hour = 60 * 60;
+     const int mini = 60;
+-    int offset_day;
+     unsigned char buf[25];
+-    time_t t;
++    const unsigned char valid_utc[] = "250101120000Z";
++    const int valid_utc_len = 13;
++    int i;
+ 
+-    /*
+-     * Setup asn_time. APACHE HTTPD uses time(NULL)
+-     */
+-    t = (time_t)107 * year + 31 * day + 34 * hour + 30 * mini + 7 * day;
+-    offset_day = 7;
+-    /*
+-     * Free these.
+-     */
+-    asn_time = wolfSSL_ASN1_TIME_adj(NULL, t, offset_day, 0);
+-    ExpectNotNull(asn_time);
+     ExpectNotNull(x = X509_new());
+     ExpectNotNull(bio = BIO_new(BIO_s_mem()));
+-    /*
+-     * Tests
+-     */
++
++    /* --- notBefore: set, get, validate, print --- */
++    {
++        time_t t = (time_t)49 * year + 125 * day + 20 * hour +
++                   30 * mini + 7 * day;
++        asn_time = wolfSSL_ASN1_TIME_adj(NULL, t, 7, 0);
++    }
++    ExpectNotNull(asn_time);
++    ExpectIntEQ(ASN1_TIME_check(asn_time), WOLFSSL_SUCCESS);
++    ExpectTrue(wolfSSL_X509_set_notBefore(x, asn_time));
++    ExpectNotNull(time_check = X509_get_notBefore(x));
++    ExpectIntEQ(ASN1_TIME_check(time_check), WOLFSSL_SUCCESS);
++    ExpectIntEQ(ASN1_TIME_print(bio, time_check), 1);
++    ExpectIntEQ(BIO_read(bio, buf, sizeof(buf)), 24);
++    ExpectIntEQ(XMEMCMP(buf, "May  8 20:30:00 2019 GMT", sizeof(buf) - 1), 0);
++
++    /* wolfSSL_X509_notBefore returns [type][length][data...] */
++    ExpectNotNull(raw = wolfSSL_X509_notBefore(x));
++    ExpectIntEQ(raw[0], time_check->type);
++    ExpectIntEQ(raw[1], time_check->length);
++    ExpectIntEQ(XMEMCMP(&raw[2], time_check->data, time_check->length), 0);
++
++    XFREE(asn_time, NULL, DYNAMIC_TYPE_OPENSSL);
++    asn_time = NULL;
++
++    /* --- notAfter: set, get, validate, print (needs 64-bit time_t) --- */
++#if !defined(TIME_T_NOT_64BIT) && !defined(NO_64BIT)
++    {
++        time_t t = (time_t)107 * year + 31 * day + 34 * hour +
++                   30 * mini + 7 * day;
++        asn_time = wolfSSL_ASN1_TIME_adj(NULL, t, 7, 0);
++    }
++    ExpectNotNull(asn_time);
+     ExpectTrue(wolfSSL_X509_set_notAfter(x, asn_time));
+-    /* time_check is simply (ANS1_TIME*)x->notAfter */
+     ExpectNotNull(time_check = X509_get_notAfter(x));
+-    /* ANS1_TIME_check validates by checking if argument can be parsed */
+     ExpectIntEQ(ASN1_TIME_check(time_check), WOLFSSL_SUCCESS);
+-    /* Convert to human readable format and compare to intended date */
+     ExpectIntEQ(ASN1_TIME_print(bio, time_check), 1);
+     ExpectIntEQ(BIO_read(bio, buf, sizeof(buf)), 24);
+     ExpectIntEQ(XMEMCMP(buf, "Jan 20 10:30:00 2077 GMT", sizeof(buf) - 1), 0);
+ 
+-    ExpectFalse(wolfSSL_X509_set_notAfter(NULL, NULL));
+-    ExpectFalse(wolfSSL_X509_set_notAfter(x, NULL));
+-    ExpectFalse(wolfSSL_X509_set_notAfter(NULL, asn_time));
++    /* wolfSSL_X509_notAfter returns [type][length][data...] */
++    ExpectNotNull(raw = wolfSSL_X509_notAfter(x));
++    ExpectIntEQ(raw[0], time_check->type);
++    ExpectIntEQ(raw[1], time_check->length);
++    ExpectIntEQ(XMEMCMP(&raw[2], time_check->data, time_check->length), 0);
+ 
+-    /*
+-     * Cleanup
+-     */
+     XFREE(asn_time, NULL, DYNAMIC_TYPE_OPENSSL);
+-    X509_free(x);
+-    BIO_free(bio);
++    asn_time = NULL;
+ #endif
+-    return EXPECT_RESULT();
+-}
+ 
+-int test_wolfSSL_X509_set_notBefore(void)
+-{
+-    EXPECT_DECLS;
+-#if (defined(OPENSSL_ALL) || defined(WOLFSSL_APACHE_HTTPD)) \
+-    && !defined(NO_ASN_TIME) && !defined(USER_TIME) && \
+-    !defined(TIME_OVERRIDES) && !defined(NO_CERTS) && \
+-    defined(WOLFSSL_CERT_GEN) && defined(WOLFSSL_CERT_REQ) && !defined(NO_BIO)
+-    X509* x = NULL;
+-    BIO*  bio = NULL;
+-    ASN1_TIME *asn_time = NULL;
+-    ASN1_TIME *time_check = NULL;
+-    const int year = 365*24*60*60;
+-    const int day  = 24*60*60;
+-    const int hour = 60*60;
+-    const int mini = 60;
+-    int offset_day;
+-    unsigned char buf[25];
+-    time_t t;
+-
+-    /*
+-     * Setup asn_time. APACHE HTTPD uses time(NULL)
+-     */
+-    t = (time_t)49 * year + 125 * day + 20 * hour + 30 * mini + 7 * day;
+-    offset_day = 7;
+-
+-    /*
+-     * Free these.
+-     */
+-    asn_time = wolfSSL_ASN1_TIME_adj(NULL, t, offset_day, 0);
+-    ExpectNotNull(asn_time);
+-    ExpectNotNull(x = X509_new());
+-    ExpectNotNull(bio = BIO_new(BIO_s_mem()));
+-    ExpectIntEQ(ASN1_TIME_check(asn_time), WOLFSSL_SUCCESS);
+-
+-    /*
+-     * Main Tests
+-     */
+-    ExpectTrue(wolfSSL_X509_set_notBefore(x, asn_time));
+-    /* time_check == (ANS1_TIME*)x->notBefore */
+-    ExpectNotNull(time_check = X509_get_notBefore(x));
+-    /* ANS1_TIME_check validates by checking if argument can be parsed */
+-    ExpectIntEQ(ASN1_TIME_check(time_check), WOLFSSL_SUCCESS);
+-    /* Convert to human readable format and compare to intended date */
+-    ExpectIntEQ(ASN1_TIME_print(bio, time_check), 1);
+-    ExpectIntEQ(BIO_read(bio, buf, sizeof(buf)), 24);
+-    ExpectIntEQ(XMEMCMP(buf, "May  8 20:30:00 2019 GMT", sizeof(buf) - 1), 0);
++    /* --- NULL parameter tests --- */
++    XMEMSET(&crafted_time, 0, sizeof(crafted_time));
++    crafted_time.type = ASN_UTC_TIME;
++    crafted_time.length = valid_utc_len;
++    XMEMCPY(crafted_time.data, valid_utc, valid_utc_len);
+ 
++    ExpectFalse(wolfSSL_X509_set_notAfter(NULL, NULL));
++    ExpectFalse(wolfSSL_X509_set_notAfter(x, NULL));
++    ExpectFalse(wolfSSL_X509_set_notAfter(NULL, &crafted_time));
+     ExpectFalse(wolfSSL_X509_set_notBefore(NULL, NULL));
+     ExpectFalse(wolfSSL_X509_set_notBefore(x, NULL));
+-    ExpectFalse(wolfSSL_X509_set_notBefore(NULL, asn_time));
+-
++    ExpectFalse(wolfSSL_X509_set_notBefore(NULL, &crafted_time));
+     ExpectNull(X509_get_notBefore(NULL));
+     ExpectNull(X509_get_notAfter(NULL));
++    ExpectNull(wolfSSL_X509_notBefore(NULL));
++    ExpectNull(wolfSSL_X509_notAfter(NULL));
++
++    /* --- Malicious length > CTC_DATE_SIZE via set_notAfter ---
++     * The function blindly propagates t->length into the x509 struct.
++     * A fixed implementation would reject this or clamp to CTC_DATE_SIZE. */
++    /* --- Length > CTC_DATE_SIZE is rejected by the bounds check --- */
++    XMEMSET(&crafted_time, 0, sizeof(crafted_time));
++    crafted_time.type = ASN_UTC_TIME;
++    crafted_time.length = 255;
++    XMEMCPY(crafted_time.data, valid_utc, valid_utc_len);
++    ExpectIntEQ(wolfSSL_X509_set_notAfter(x, &crafted_time),
++                WOLFSSL_FAILURE);
++
++    crafted_time.length = 128;
++    ExpectIntEQ(wolfSSL_X509_set_notBefore(x, &crafted_time),
++                WOLFSSL_FAILURE);
++
++    /* --- Negative length is rejected --- */
++    crafted_time.length = -1;
++    ExpectIntEQ(wolfSSL_X509_set_notAfter(x, &crafted_time),
++                WOLFSSL_FAILURE);
++
++    /* --- Fixed-size copy leaks sentinel bytes beyond valid length ---
++     * Even when t->length is correct (13 for UTCTime), XMEMCPY copies
++     * a full CTC_DATE_SIZE (32) bytes from the source. */
++    XMEMSET(&crafted_time, 0, sizeof(crafted_time));
++    crafted_time.type = ASN_UTC_TIME;
++    crafted_time.length = valid_utc_len;
++    XMEMCPY(crafted_time.data, valid_utc, valid_utc_len);
++    for (i = valid_utc_len; i < CTC_DATE_SIZE; i++) {
++        crafted_time.data[i] = 0xDE;
++    }
++
++    ExpectIntEQ(wolfSSL_X509_set_notAfter(x, &crafted_time), WOLFSSL_SUCCESS);
++    ExpectNotNull(retrieved = X509_get_notAfter(x));
++    ExpectBufEQ(retrieved->data, valid_utc, valid_utc_len);
++    for (i = valid_utc_len; i < CTC_DATE_SIZE; i++) {
++        ExpectIntEQ(retrieved->data[i], 0xDE);
++    }
++
++    /* --- Boundary: length CTC_DATE_SIZE - 2 (accepted) --- */
++    XMEMSET(&crafted_time, 0, sizeof(crafted_time));
++    crafted_time.type = ASN_GENERALIZED_TIME;
++    crafted_time.length = CTC_DATE_SIZE - 2;
++    XMEMSET(crafted_time.data, 'A', CTC_DATE_SIZE - 2);
++
++    ExpectIntEQ(wolfSSL_X509_set_notAfter(x, &crafted_time),
++                WOLFSSL_SUCCESS);
++    ExpectNotNull(retrieved = X509_get_notAfter(x));
++    ExpectIntEQ(retrieved->length, CTC_DATE_SIZE - 2);
++
++    /* wolfSSL_X509_notAfter must also succeed at this boundary */
++    ExpectNotNull(raw = wolfSSL_X509_notAfter(x));
++
++    /* --- Boundary: length CTC_DATE_SIZE - 1 (rejected) --- */
++    crafted_time.length = CTC_DATE_SIZE - 1;
++    ExpectIntEQ(wolfSSL_X509_set_notAfter(x, &crafted_time),
++                WOLFSSL_FAILURE);
++
++    /* --- Boundary: length CTC_DATE_SIZE (rejected) --- */
++    crafted_time.length = CTC_DATE_SIZE;
++    ExpectIntEQ(wolfSSL_X509_set_notAfter(x, &crafted_time),
++                WOLFSSL_FAILURE);
+ 
+-    /*
+-     * Cleanup
+-     */
+-    XFREE(asn_time, NULL, DYNAMIC_TYPE_OPENSSL);
+     X509_free(x);
+     BIO_free(bio);
+ #endif
+diff --git a/tests/api/test_ossl_x509.h b/tests/api/test_ossl_x509.h
+index 93ff67461c1..e2b5167f02e 100644
+--- a/tests/api/test_ossl_x509.h
++++ b/tests/api/test_ossl_x509.h
+@@ -37,8 +37,7 @@ int test_wolfSSL_X509_check_email(void);
+ int test_wolfSSL_X509(void);
+ int test_wolfSSL_X509_get0_tbs_sigalg(void);
+ int test_wolfSSL_X509_set_name(void);
+-int test_wolfSSL_X509_set_notAfter(void);
+-int test_wolfSSL_X509_set_notBefore(void);
++int test_wolfSSL_X509_set_notAfterBefore(void);
+ int test_wolfSSL_X509_set_version(void);
+ int test_wolfSSL_X509_get_serialNumber(void);
+ int test_wolfSSL_get_tbs(void);
+@@ -69,8 +68,7 @@ int test_wolfSSL_X509_cmp(void);
+     TEST_DECL_GROUP("ossl_x509", test_wolfSSL_X509),                           \
+     TEST_DECL_GROUP("ossl_x509", test_wolfSSL_X509_get0_tbs_sigalg),           \
+     TEST_DECL_GROUP("ossl_x509", test_wolfSSL_X509_set_name),                  \
+-    TEST_DECL_GROUP("ossl_x509", test_wolfSSL_X509_set_notAfter),              \
+-    TEST_DECL_GROUP("ossl_x509", test_wolfSSL_X509_set_notBefore),             \
++    TEST_DECL_GROUP("ossl_x509", test_wolfSSL_X509_set_notAfterBefore),        \
+     TEST_DECL_GROUP("ossl_x509", test_wolfSSL_X509_set_version),               \
+     TEST_DECL_GROUP("ossl_x509", test_wolfSSL_X509_get_serialNumber),          \
+     TEST_DECL_GROUP("ossl_x509", test_wolfSSL_get_tbs),                        \
+diff --git a/tests/api/test_x509.c b/tests/api/test_x509.c
+index 2482823a81d..cd0a06241de 100644
+--- a/tests/api/test_x509.c
++++ b/tests/api/test_x509.c
+@@ -434,3 +434,201 @@ int test_x509_set_serialNumber(void)
+     return TEST_SKIPPED;
+ #endif /* OPENSSL_EXTRA || OPENSSL_EXTRA_X509_SMALL */
+ }
++
++/*
++ * Test: CopyDateToASN1_TIME clamps attacker-controlled time field length.
++ *
++ * Attack chain:
++ *   1. Attacker crafts a DER certificate with notBefore UTCTime length byte
++ *      set to 0x1F (31) instead of 0x0D (13). The first 13 bytes are a valid
++ *      "YYMMDDHHMMSSZ" string (passes ExtractDate 'Z'-at-position-12 check),
++ *      followed by 18 sentinel bytes (0xDE). Parent SEQUENCE lengths are
++ *      adjusted so the DER is structurally valid.
++ *   2. The malicious cert is presented as the server cert in a TLS handshake
++ *      (via memio -- no sockets needed).
++ *   3. The client parses the cert. CopyDateToASN1_TIME() in internal.c must
++ *      clamp the length to CTC_DATE_SIZE - 2 (30) so that downstream code
++ *      in wolfSSL_X509_notBefore() can safely prepend type+length at offset
++ *      0-1 of the 32-byte notBeforeData without overflowing.
++ *
++ * The test verifies that notBefore.length <= CTC_DATE_SIZE - 2 (30),
++ * regardless of the attacker's wire value (31).
++ */
++
++#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
++    (defined(OPENSSL_EXTRA) || defined(OPENSSL_ALL)) && \
++    !defined(NO_RSA) && !defined(NO_WOLFSSL_CLIENT) && \
++    !defined(NO_WOLFSSL_SERVER)
++
++/* Verify callback that accepts all certificates regardless of errors. */
++static int accept_all_verify_cb(int preverify, WOLFSSL_X509_STORE_CTX* store)
++{
++    (void)preverify;
++    (void)store;
++    return 1;
++}
++
++/*
++ * Craft a malicious DER certificate by inflating the notBefore UTCTime length.
++ *
++ * Scans for the Validity SEQUENCE (pattern: 0x30 XX 0x17 0x0D), inflates the
++ * notBefore length by 'inflate' bytes, inserts sentinel bytes (0xDE), and
++ * adjusts all parent SEQUENCE lengths.
++ *
++ * out:      caller-supplied buffer, must be at least origSz + inflate bytes.
++ * outSz:   set to the new cert size on success.
++ * Returns 0 on success, -1 on failure.
++ */
++static int craft_malicious_time_cert(const byte* orig, int origSz,
++    byte* out, int* outSz, int inflate)
++{
++    int i;
++    int validityOff = -1;
++    int notBeforeLenOff;  /* offset of the notBefore length byte */
++    int notBeforeDataEnd; /* offset just past the 13-byte time data */
++    word16 seqLen;
++
++    /* Scan for Validity SEQUENCE: 0x30 XX 0x17 0x0D */
++    for (i = 0; i < origSz - 3; i++) {
++        if (orig[i] == 0x30 && orig[i + 2] == 0x17 && orig[i + 3] == 0x0D) {
++            validityOff = i;
++            break;
++        }
++    }
++    if (validityOff < 0) {
++        return -1;
++    }
++
++    notBeforeLenOff = validityOff + 3; /* the 0x0D byte */
++    notBeforeDataEnd = notBeforeLenOff + 1 + 13; /* tag(1) was at +2, data starts at +4 */
++
++    /* Build the new buffer:
++     *   [0 .. notBeforeLenOff-1]  unchanged prefix
++     *   [notBeforeLenOff]         inflated length byte
++     *   [notBeforeLenOff+1 .. notBeforeDataEnd-1]  original 13 time bytes
++     *   <insert 'inflate' sentinel bytes here>
++     *   [notBeforeDataEnd .. origSz-1]  remainder of cert
++     */
++
++    /* Copy prefix including the length byte position */
++    XMEMCPY(out, orig, notBeforeDataEnd);
++
++    /* Patch the notBefore UTCTime length byte */
++    out[notBeforeLenOff] = (byte)(0x0D + inflate);
++
++    /* Insert sentinel bytes */
++    XMEMSET(out + notBeforeDataEnd, 0xDE, inflate);
++
++    /* Copy the rest of the cert (notAfter field onward) */
++    XMEMCPY(out + notBeforeDataEnd + inflate,
++             orig + notBeforeDataEnd,
++             origSz - notBeforeDataEnd);
++
++    /* Fix Validity SEQUENCE length (single-byte encoding at validityOff+1) */
++    out[validityOff + 1] = (byte)(orig[validityOff + 1] + inflate);
++
++    /* Fix TBSCertificate SEQUENCE length (2-byte big-endian at offset 6-7,
++     * format: 30 82 XX XX) */
++    seqLen = ((word16)orig[6] << 8) | orig[7];
++    seqLen += (word16)inflate;
++    out[6] = (byte)(seqLen >> 8);
++    out[7] = (byte)(seqLen & 0xFF);
++
++    /* Fix Certificate SEQUENCE length (2-byte big-endian at offset 2-3,
++     * format: 30 82 XX XX) */
++    seqLen = ((word16)orig[2] << 8) | orig[3];
++    seqLen += (word16)inflate;
++    out[2] = (byte)(seqLen >> 8);
++    out[3] = (byte)(seqLen & 0xFF);
++
++    *outSz = origSz + inflate;
++    return 0;
++}
++
++#endif /* HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES && ... */
++
++int test_x509_time_field_overread_via_tls(void)
++{
++    EXPECT_DECLS;
++#if defined(HAVE_MANUAL_MEMIO_TESTS_DEPENDENCIES) && \
++    (defined(OPENSSL_EXTRA) || defined(OPENSSL_ALL)) && \
++    !defined(NO_RSA) && !defined(NO_WOLFSSL_CLIENT) && \
++    !defined(NO_WOLFSSL_SERVER)
++    struct test_memio_ctx test_ctx;
++    WOLFSSL_CTX* ctx_c = NULL;
++    WOLFSSL_CTX* ctx_s = NULL;
++    WOLFSSL* ssl_c = NULL;
++    WOLFSSL* ssl_s = NULL;
++    WOLFSSL_X509* peer = NULL;
++    WOLFSSL_ASN1_TIME* notBefore = NULL;
++    /*
++     * Inflate notBefore length by 18 bytes: 13 + 18 = 31.
++     * CopyDecodedToX509() sets notBefore.length = min(31, MAX_DATE_SZ) = 31
++     * because it trusts the raw ASN.1 length byte from the wire.
++     * A valid UTCTime is only 13 bytes.
++     */
++    const int INFLATE = 18;
++    byte malicious_der[sizeof_server_cert_der_2048 + 18];
++    int malicious_der_sz = 0;
++
++    /* --- Step 1: Craft malicious certificate --- */
++    ExpectIntEQ(craft_malicious_time_cert(
++        server_cert_der_2048, (int)sizeof_server_cert_der_2048,
++        malicious_der, &malicious_der_sz, INFLATE), 0);
++    ExpectIntEQ(malicious_der_sz,
++                (int)sizeof_server_cert_der_2048 + INFLATE);
++
++    /* --- Step 2: Set up TLS via memio --- */
++    XMEMSET(&test_ctx, 0, sizeof(test_ctx));
++
++    ExpectIntEQ(test_memio_setup_ex(&test_ctx, &ctx_c, &ctx_s,
++        &ssl_c, &ssl_s,
++        wolfTLSv1_2_client_method, wolfTLSv1_2_server_method,
++        (byte*)ca_cert_der_2048, (int)sizeof_ca_cert_der_2048,
++        malicious_der, malicious_der_sz,
++        (byte*)server_key_der_2048, (int)sizeof_server_key_der_2048), 0);
++
++    /* Client verify callback accepts all errors (signature is broken
++     * because we modified the TBSCertificate without re-signing).
++     * Must be set on ssl_c (not ctx_c) because the SSL object was already
++     * created from ctx_c inside test_memio_setup_ex(). */
++    if (ssl_c != NULL) {
++        wolfSSL_set_verify(ssl_c, WOLFSSL_VERIFY_PEER,
++                           accept_all_verify_cb);
++    }
++
++    /* --- Step 3: Perform TLS handshake --- */
++    ExpectIntEQ(test_memio_do_handshake(ssl_c, ssl_s, 10, NULL), 0);
++
++    /* --- Step 4: Verify CopyDecodedToX509 does not trust wire length --- */
++#ifdef KEEP_PEER_CERT
++    ExpectNotNull(peer = wolfSSL_get_peer_certificate(ssl_c));
++
++    /*
++     * X509_get_notBefore returns &x509->notBefore directly (no copy).
++     * CopyDecodedToX509() set notBefore.length = min(wireLength, 32) = 31
++     * because it trusts the raw ASN.1 length byte from the attacker's cert.
++     *
++     * The data buffer is CTC_DATE_SIZE (32) bytes, and the notBeforeData
++     * encoding prepends type+length at offset 0-1, leaving 30 bytes for
++     * content. So the maximum safe length is CTC_DATE_SIZE - 2 = 30.
++     *
++     * This assertion FAILS on the buggy code (length > 30) and will PASS
++     * once CopyDateToASN1_TIME clamps to the buffer capacity.
++     */
++    if (peer != NULL) {
++        notBefore = wolfSSL_X509_get_notBefore(peer);
++    }
++    ExpectNotNull(notBefore);
++    ExpectIntLE(notBefore->length, CTC_DATE_SIZE - 2); /* max: 30 */
++
++    wolfSSL_X509_free(peer);
++#endif /* KEEP_PEER_CERT */
++
++    wolfSSL_free(ssl_s);
++    wolfSSL_free(ssl_c);
++    wolfSSL_CTX_free(ctx_s);
++    wolfSSL_CTX_free(ctx_c);
++#endif /* compile guards */
++    return EXPECT_RESULT();
++}
+diff --git a/tests/api/test_x509.h b/tests/api/test_x509.h
+index b43f74722b1..09edb60fdb1 100644
+--- a/tests/api/test_x509.h
++++ b/tests/api/test_x509.h
+@@ -26,11 +26,13 @@ int test_x509_rfc2818_verification_callback(void);
+ int test_x509_GetCAByAKID(void);
+ int test_x509_set_serialNumber(void);
+ int test_x509_verify_cert_hostname_check(void);
++int test_x509_time_field_overread_via_tls(void);
+ 
+ #define TEST_X509_DECLS                                                        \
+     TEST_DECL_GROUP("x509", test_x509_rfc2818_verification_callback),          \
+     TEST_DECL_GROUP("x509", test_x509_GetCAByAKID),                            \
+     TEST_DECL_GROUP("x509", test_x509_set_serialNumber),                       \
+-    TEST_DECL_GROUP("x509", test_x509_verify_cert_hostname_check)
++    TEST_DECL_GROUP("x509", test_x509_verify_cert_hostname_check),             \
++    TEST_DECL_GROUP("x509", test_x509_time_field_overread_via_tls)
+ 
+ #endif /* WOLFCRYPT_TEST_X509_H */

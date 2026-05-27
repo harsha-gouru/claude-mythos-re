@@ -1,0 +1,46 @@
+From e3ca1e64b0bcd627c7c5d3620f891cc22d1d03c7 Mon Sep 17 00:00:00 2001
+From: Sebastian Thiel <sebastian.thiel@icloud.com>
+Date: Thu, 23 Apr 2026 16:45:43 +0800
+Subject: [PATCH] fix(gix-submodule): make sure that `update` commands won't be
+ from `.gitmodules` files
+
+This is a proper fix for what previously was also already attempted,
+but wasn't correctly implemented.
+---
+ gix-submodule/src/access.rs | 16 +++++++---------
+ 1 file changed, 7 insertions(+), 9 deletions(-)
+
+diff --git a/gix-submodule/src/access.rs b/gix-submodule/src/access.rs
+index 0b2f5b21c2d..0ae7d654867 100644
+--- a/gix-submodule/src/access.rs
++++ b/gix-submodule/src/access.rs
+@@ -166,7 +166,12 @@ impl File {
+ 
+     /// Retrieve the `update` field of the submodule named `name`, if present.
+     pub fn update(&self, name: &BStr) -> Result<Option<Update>, config::update::Error> {
+-        let value: Update = match self.config.string(&format!("submodule.{name}.update")) {
++        let mut value_is_from_modules_file = None;
++        let our_meta = self.config.meta();
++        let value: Update = match self.config.string_filter(&format!("submodule.{name}.update"), |meta| {
++            value_is_from_modules_file = Some(std::ptr::eq(meta, our_meta));
++            true
++        }) {
+             Some(v) => v.as_ref().try_into().map_err(|()| config::update::Error::Invalid {
+                 submodule: name.to_owned(),
+                 actual: v.into_owned(),
+@@ -175,14 +180,7 @@ impl File {
+         };
+ 
+         if let Update::Command(cmd) = &value {
+-            let ours = self.config.meta();
+-            let has_value_from_foreign_section = self
+-                .config
+-                .sections_by_name("submodule")
+-                .into_iter()
+-                .flatten()
+-                .any(|s| s.header().subsection_name() == Some(name) && !std::ptr::eq(s.meta(), ours));
+-            if !has_value_from_foreign_section {
++            if value_is_from_modules_file.unwrap_or_default() {
+                 return Err(config::update::Error::CommandForbiddenInModulesConfiguration {
+                     submodule: name.to_owned(),
+                     actual: cmd.to_owned(),

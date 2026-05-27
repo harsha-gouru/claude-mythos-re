@@ -1,0 +1,142 @@
+From e5ab7fa7457d82294bafcfb6c103a9e79b4aa213 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Tobias=20Frauenschl=C3=A4ger?= <tobias@wolfssl.com>
+Date: Mon, 30 Mar 2026 16:19:00 +0200
+Subject: [PATCH] x509: fix CA:FALSE bypass in wolfSSL_X509_verify_cert
+
+When an untrusted issuer has CA:FALSE and no verify_cb is registered,
+the !isCa branch now fails closed (ret=WOLFSSL_FAILURE, goto exit)
+instead of falling through and skipping X509StoreVerifyCert for the
+leaf. SetupStoreCtxError_ex is also hardened to never overwrite a
+previously recorded error with success, preventing a later valid chain
+link from clobbering ctx->error back to X509_V_OK. Tests added for
+both the no-callback rejection and the error-preservation cases.
+
+Reported by: Nicholas Carlini (Anthropic) & Thai Duong (Calif.io)
+---
+ src/x509_str.c                 | 11 +++++++-
+ tests/api/test_ossl_x509_str.c | 51 +++++++++++++++++++++++++++++++++-
+ tests/api/test_ossl_x509_str.h |  2 ++
+ 3 files changed, 62 insertions(+), 2 deletions(-)
+
+diff --git a/src/x509_str.c b/src/x509_str.c
+index 2c48c419644..90113caede2 100644
+--- a/src/x509_str.c
++++ b/src/x509_str.c
+@@ -318,6 +318,11 @@ static void SetupStoreCtxError_ex(WOLFSSL_X509_STORE_CTX* ctx, int ret,
+ {
+     int error = GetX509Error(ret);
+ 
++    /* Do not overwrite a previously recorded error with success; preserve
++     * the worst-seen error across the chain walk. */
++    if (error == 0 && ctx->error != 0)
++        return;
++
+     wolfSSL_X509_STORE_CTX_set_error(ctx, error);
+     wolfSSL_X509_STORE_CTX_set_error_depth(ctx, depth);
+ }
+@@ -635,9 +640,14 @@ int wolfSSL_X509_verify_cert(WOLFSSL_X509_STORE_CTX* ctx)
+                 if (ctx->store->verify_cb) {
+                     ret = ctx->store->verify_cb(0, ctx);
+                     if (ret != WOLFSSL_SUCCESS) {
++                        ret = WOLFSSL_FAILURE;
+                         goto exit;
+                     }
+                 }
++                else {
++                    ret = WOLFSSL_FAILURE;
++                    goto exit;
++                }
+             } else
+         #endif
+             {
+@@ -2174,4 +2184,3 @@ int wolfSSL_X509_STORE_set1_param(WOLFSSL_X509_STORE *ctx,
+ #endif /* !WOLFCRYPT_ONLY */
+ 
+ #endif /* !WOLFSSL_X509_STORE_INCLUDED */
+-
+diff --git a/tests/api/test_ossl_x509_str.c b/tests/api/test_ossl_x509_str.c
+index 111994a3473..99b82877c30 100644
+--- a/tests/api/test_ossl_x509_str.c
++++ b/tests/api/test_ossl_x509_str.c
+@@ -1074,6 +1074,56 @@ int test_X509_STORE_InvalidCa(void)
+     ExpectIntEQ(X509_STORE_CTX_init(ctx, str, cert, untrusted), 1);
+     ExpectIntEQ(X509_verify_cert(ctx), 1);
+     ExpectIntEQ(last_errcode, X509_V_ERR_INVALID_CA);
++    /* Defense in depth: ctx->error must not be clobbered back to X509_V_OK
++     * by the later successful verification of the intermediate against the
++     * trusted root.  The worst-seen error must persist. */
++    ExpectIntEQ(X509_STORE_CTX_get_error(ctx), X509_V_ERR_INVALID_CA);
++
++    X509_free(cert);
++    X509_STORE_free(str);
++    X509_STORE_CTX_free(ctx);
++    sk_X509_pop_free(untrusted, NULL);
++#endif
++    return EXPECT_RESULT();
++}
++
++int test_X509_STORE_InvalidCa_NoCallback(void)
++{
++    EXPECT_DECLS;
++#if defined(OPENSSL_ALL) && !defined(NO_RSA) && !defined(NO_FILESYSTEM)
++    const char* filename = "./certs/intermediate/ca_false_intermediate/"
++                                                    "test_int_not_cacert.pem";
++    const char* srvfile = "./certs/intermediate/ca_false_intermediate/"
++                                            "test_sign_bynoca_srv.pem";
++    X509_STORE_CTX* ctx = NULL;
++    X509_STORE* str = NULL;
++    XFILE fp = XBADFILE;
++    X509* cert = NULL;
++    STACK_OF(X509)* untrusted = NULL;
++
++    ExpectTrue((fp = XFOPEN(srvfile, "rb"))
++            != XBADFILE);
++    ExpectNotNull(cert = PEM_read_X509(fp, 0, 0, 0 ));
++    if (fp != XBADFILE) {
++        XFCLOSE(fp);
++        fp = XBADFILE;
++    }
++
++    ExpectNotNull(str = X509_STORE_new());
++    ExpectNotNull(ctx = X509_STORE_CTX_new());
++    ExpectNotNull(untrusted = sk_X509_new_null());
++
++    /* Create cert chain stack with an intermediate that is CA:FALSE. */
++    ExpectIntEQ(test_X509_STORE_untrusted_load_cert_to_stack(filename,
++                untrusted), TEST_SUCCESS);
++
++    ExpectIntEQ(X509_STORE_load_locations(str,
++                "./certs/intermediate/ca_false_intermediate/test_ca.pem",
++                                                                    NULL), 1);
++    ExpectIntEQ(X509_STORE_CTX_init(ctx, str, cert, untrusted), 1);
++    /* No verify callback: verification must fail on CA:FALSE issuer. */
++    ExpectIntNE(X509_verify_cert(ctx), 1);
++    ExpectIntEQ(X509_STORE_CTX_get_error(ctx), X509_V_ERR_INVALID_CA);
+ 
+     X509_free(cert);
+     X509_STORE_free(str);
+@@ -1793,4 +1843,3 @@ int test_X509_STORE_No_SSL_CTX(void)
+ #endif
+     return EXPECT_RESULT();
+ }
+-
+diff --git a/tests/api/test_ossl_x509_str.h b/tests/api/test_ossl_x509_str.h
+index 9525a3a1879..67370464533 100644
+--- a/tests/api/test_ossl_x509_str.h
++++ b/tests/api/test_ossl_x509_str.h
+@@ -31,6 +31,7 @@ int test_wolfSSL_X509_STORE_CTX(void);
+ int test_wolfSSL_X509_STORE_CTX_ex(void);
+ int test_X509_STORE_untrusted(void);
+ int test_X509_STORE_InvalidCa(void);
++int test_X509_STORE_InvalidCa_NoCallback(void);
+ int test_wolfSSL_X509_STORE_CTX_trusted_stack_cleanup(void);
+ int test_wolfSSL_X509_STORE_CTX_get_issuer(void);
+ int test_wolfSSL_X509_STORE_set_flags(void);
+@@ -51,6 +52,7 @@ int test_X509_STORE_No_SSL_CTX(void);
+     TEST_DECL_GROUP("ossl_x509_store", test_wolfSSL_X509_STORE_CTX_ex),        \
+     TEST_DECL_GROUP("ossl_x509_store", test_X509_STORE_untrusted),             \
+     TEST_DECL_GROUP("ossl_x509_store", test_X509_STORE_InvalidCa),             \
++    TEST_DECL_GROUP("ossl_x509_store", test_X509_STORE_InvalidCa_NoCallback),  \
+     TEST_DECL_GROUP("ossl_x509_store",                                         \
+                            test_wolfSSL_X509_STORE_CTX_trusted_stack_cleanup), \
+     TEST_DECL_GROUP("ossl_x509_store",                                         \

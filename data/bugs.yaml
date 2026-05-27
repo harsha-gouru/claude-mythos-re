@@ -1,6 +1,10 @@
-updated: 2026-05-18
+updated: 2026-05-27
 scope: Publicly traceable fixed bugs and related patches from Claude Mythos / Anthropic-Claude bug discovery discussions.
 policy: Defensive patch/root-cause atlas only; no exploit PoCs.
+sources:
+  - https://red.anthropic.com/2026/cvd/ (disclosure dashboard, 2026-05-22 snapshot, manifest SHA-3 b7a0c5362...)
+  - https://www.anthropic.com/coordinated-vulnerability-disclosure (CVD policy)
+  - Claude Mythos Preview System Card (April 7, 2026)
 
 confirmed_mythos_or_anthropic_public_fixes:
   - id: openbsd-sack-seq-overflow
@@ -187,6 +191,326 @@ related_public_claude_or_anthropic_research_fixes:
     commit: 07052febd3a252d30e6f0de67b2ea4f6b9aacddd
     patch: patches/cgif-2026-lzw-alloc-size.patch
     signal: mapped from Anthropic zero-days examples via oss-security
+
+mythos_disclosure_dashboard_revealed_2026_05_20:
+  # 26 findings whose disclosure window closed and were published on red.anthropic.com/2026/cvd/.
+  # Patch filenames assigned but may be MISSING until the patch-fetch agent completes — see patches/README.md once it lands.
+
+  # nginx — CVE-2026-27654 split into 2 distinct upstream commits
+  - id: nginx-cve-2026-27654-webdav-copy-move
+    project: nginx
+    cve: CVE-2026-27654
+    ant_id: ANT-2026-HY56VRSB
+    severity: high
+    bug_class: heap-buffer-overflow
+    summary: WebDAV DAV COPY/MOVE heap buffer overflow with alias directive.
+    patch: patches/nginx-2026-27654-webdav-copy-move-path-validation.patch
+    upstream: https://github.com/nginx/nginx/commit/f0a084645b8fede56ee08f2cc557c2475eb2a28d
+    fix_invariant: DAV COPY/MOVE handler validates source+destination resolve to paths under configured root
+
+  - id: nginx-cve-2026-27654-webdav-alias-arbitrary-write
+    project: nginx
+    cve: CVE-2026-27654
+    ant_id: ANT-2026-VS18SA90
+    severity: critical
+    bug_class: arbitrary-file-write
+    summary: Unauthenticated remote file write in nginx WebDAV module via alias-prefix size_t underflow.
+    patch: patches/nginx-2026-27654-webdav-alias-destination-length.patch
+    upstream: https://github.com/nginx/nginx/commit/9739e755b8dddba82e65ca2a08d079f4c9826b75
+    fix_invariant: destination URI length check when `alias` directive is in effect prevents prefix underflow
+
+  # jq
+  - id: jq-cve-2026-32316-string-concat
+    project: jq
+    cve: CVE-2026-32316
+    ant_id: ANT-2026-EBDTPNVH
+    severity: medium
+    bug_class: heap-buffer-overflow
+    summary: Integer overflow in string concatenation leads to 1 GB memcpy heap buffer overflow.
+    patch: patches/jq-2026-32316-jvp-string-append-overflow.patch
+    upstream: https://github.com/jqlang/jq/commit/e47e56d226519635768e6aab2f38f0ab037c09e5
+    fix_invariant: jvp_string_append / jvp_string_copy_replace_bad check (currlen+len)*2 against UINT32_MAX before alloc
+
+  # MapServer
+  - id: mapserver-cve-2026-33721-sld-categorize
+    project: MapServer
+    cve: CVE-2026-33721
+    ant_id: ANT-2026-9SZMPW41
+    severity: medium
+    bug_class: heap-buffer-overflow
+    summary: Wrong counter variable in reallocation guard for SLD categorize threshold parsing.
+    patch: patches/mapserver-2026-33721-sld-raster-symbolizer-overflow.patch
+    upstream: https://github.com/MapServer/MapServer/commit/ddd246b90acc6c7f920dfd056f33613cebe9154d
+    fix_invariant: msSLDParseRasterSymbolizer bounds-checks threshold/value array before writing categorize entries
+
+  # temporal
+  - id: temporal-cve-2026-5199-cross-namespace
+    project: temporalio/temporal
+    cve: CVE-2026-5199
+    ant_id: ANT-2026-DJBBBBPE
+    severity: critical
+    bug_class: broken-access-control
+    summary: Cross-namespace workflow manipulation (including deletion) on the same cluster via batch handler.
+    patch: patches/temporal-2026-5199-cross-namespace-batch-workflow.patch
+    upstream: https://github.com/temporalio/temporal/commit/e69b0c71bb27bf422c94d77a3d66f47fb20034bc
+    fix_invariant: batch workflow handler verifies target workflow's namespace matches caller's namespace before manipulation/deletion
+
+  # wolfSSL — 9 CVEs, 9 findings
+  - id: wolfssl-cve-2026-5446-aria-gcm-nonce-reuse
+    project: wolfSSL
+    cve: CVE-2026-5446
+    ant_id: ANT-2026-SB4PHA43
+    severity: high
+    bug_class: crypto-failure
+    summary: ARIA-GCM nonce reuse in TLS 1.2 record encryption.
+    patch: patches/wolfssl-2026-5446-aria-gcm-nonce-reuse.patch
+    upstream: https://github.com/wolfSSL/wolfssl/commit/2cd4f1c69d34e9179a2db770c93cb3c3585bdc28
+    fix_invariant: TLS 1.2 ARIA-GCM derives per-record IV from explicit nonce + sequence number instead of reusing the 12-byte session nonce
+
+  - id: wolfssl-cve-2026-5447-certfromx509-aki-overflow
+    project: wolfSSL
+    cve: CVE-2026-5447
+    ant_id: ANT-2026-VV0PRKKV
+    severity: medium
+    bug_class: heap-buffer-overflow
+    summary: Heap buffer overflow in CertFromX509 AuthorityKeyIdentifier copy.
+    patch: patches/wolfssl-2026-5447-certfromx509-aki-overflow.patch
+    upstream: https://github.com/wolfSSL/wolfssl/commit/d278da09dfa60237f246236f2c8acc5d11c5915a
+    fix_invariant: CertFromX509 validates AuthorityKeyIdentifier length against destination buffer before copy
+
+  - id: wolfssl-cve-2026-5448-x509-notafter-overflow
+    project: wolfSSL
+    cve: CVE-2026-5448
+    ant_id: ANT-2026-6615Y595
+    severity: medium
+    bug_class: heap-buffer-overflow
+    summary: 2-byte heap overflow in wolfSSL_X509_notAfter / wolfSSL_X509_notBefore.
+    patch: patches/wolfssl-2026-5448-x509-notafter-notbefore-overflow.patch
+    upstream: https://github.com/wolfSSL/wolfssl/commit/4dc347082c9d7ac9968cd67f0a5f0438dea45b18
+    fix_invariant: bounds check on ASN.1 date length before 2-byte heap write
+
+  - id: wolfssl-cve-2026-5466-eccsi-signature-forgery
+    project: wolfSSL
+    cve: CVE-2026-5466
+    ant_id: ANT-2026-KNXJMVYC
+    severity: high
+    bug_class: signature-bypass
+    summary: ECCSI universal signature forgery via r=0, s=0 (missing s reject).
+    patch: patches/wolfssl-2026-5466-eccsi-r0-s0-forgery.patch
+    upstream: https://github.com/wolfSSL/wolfssl/commit/13a016367ff4b4d3cc4c9bc2bfdfe692a512dd81
+    fix_invariant: wc_VerifyEccsiHash enforces r,s ∈ [1, q-1] after decoding
+
+  - id: wolfssl-cve-2026-5477-cmac-totalsz-wraparound
+    project: wolfSSL
+    cve: CVE-2026-5477
+    ant_id: ANT-2026-ZZY4987K
+    severity: high
+    bug_class: integer-overflow
+    summary: CMAC 32-bit totalSz wraparound enables prefix substitution forgery.
+    patch: patches/wolfssl-2026-5477-cmac-totalsz-wraparound.patch
+    upstream: https://github.com/wolfSSL/wolfssl/commit/10953f021b3bab8a92d10def897bb489cacad625
+    fix_invariant: CMAC totalSz widened / wraparound-safe; first-block detection no longer relies on totalSz != 0 post-overflow
+
+  - id: wolfssl-cve-2026-5479-chacha20-poly1305-no-tag-verify
+    project: wolfSSL
+    cve: CVE-2026-5479
+    ant_id: ANT-2026-RSSMAMA7
+    severity: high
+    bug_class: crypto-failure
+    summary: EVP ChaCha20-Poly1305 path never verified the Poly1305 tag.
+    patch: patches/wolfssl-2026-5479-evp-chacha20-poly1305-tag-unverified.patch
+    upstream: https://github.com/wolfSSL/wolfssl/commit/1faddd640edc8195c1fb7cb3904876e434ecab87
+    fix_invariant: EVP DecryptFinal_ex constant-time compares Poly1305 tag and fails on mismatch
+
+  - id: wolfssl-cve-2026-5500-cms-aead-tag-truncation
+    project: wolfSSL
+    cve: CVE-2026-5500
+    ant_id: ANT-2026-P23DVQM2
+    severity: high
+    bug_class: crypto-failure
+    summary: CMS AuthEnvelopedData AEAD forgery via GCM tag truncation.
+    patch: patches/wolfssl-2026-5500-cms-authenveloped-gcm-tag-truncation.patch
+    upstream: https://github.com/wolfSSL/wolfssl/commit/a88dd07c70e9415c3daa64d478f9a45bd65f9e5d
+    fix_invariant: wc_PKCS7_DecodeAuthEnvelopedData rejects GCM tag length below AES_BLOCK_SIZE / parsed ICVLen
+
+  - id: wolfssl-cve-2026-5501-verify-cert-leaf-bypass
+    project: wolfSSL
+    cve: CVE-2026-5501
+    ant_id: ANT-2026-K8YY7WWS
+    severity: high
+    bug_class: improper-cert-validation
+    summary: wolfSSL_X509_verify_cert leaf signature verification bypass via CA:FALSE issuer.
+    patch: patches/wolfssl-2026-5501-x509-verify-ca-false-bypass.patch
+    upstream: https://github.com/wolfSSL/wolfssl/commit/e5ab7fa7457d82294bafcfb6c103a9e79b4aa213
+    fix_invariant: wolfSSL_X509_verify_cert's !isCa branch fails closed instead of accepting CA:FALSE issuer
+
+  - id: wolfssl-cve-2026-5503-ech-publicname-overflow
+    project: wolfSSL
+    cve: CVE-2026-5503
+    ant_id: ANT-2026-0JRYQPCF
+    severity: high
+    bug_class: heap-buffer-overflow
+    summary: ECH heap buffer overflow via publicname SNI handling (NULL deref + overflow on publicname swap).
+    patch: patches/wolfssl-2026-5503-ech-publicname-sni-overflow.patch
+    upstream: https://github.com/wolfSSL/wolfssl/commit/1823f2e9fcdf0c3a6a41d255033d817d23a5ebb3
+    fix_invariant: TLSX_EchChangeSNI checks TLSX_Find result before mutating extensions list
+
+  # nomad
+  - id: nomad-cve-2026-7474-host-volume-traversal
+    project: nomad
+    cve: CVE-2026-7474
+    ant_id: ANT-2026-CN7KX43N
+    severity: critical
+    bug_class: path-traversal
+    summary: Path traversal at client/hostvolumemanager/host_volume_plugin.go:229.
+    patch: patches/nomad-2026-7474-host-volume-plugin-path-traversal.patch
+    upstream: https://github.com/hashicorp/nomad/commit/a62eb2a35f0f15e8af65eb875525c2c245c9682a
+    fix_invariant: host_volume_plugin.go constrains resolved plugin path to lie inside the configured plugin directory
+
+  # libyang
+  - id: libyang-ghsa-9f49-metadata-uaf
+    project: libyang
+    ghsa: GHSA-9f49-8x56-jmjc
+    ant_id: ANT-2026-TZQ1KH7E
+    severity: medium
+    bug_class: use-after-free
+    summary: Heap UAF write in metadata list management during XML data parsing (wrong list-head pointer update).
+    patch: patches/libyang-2026-ghsa-9f49-metadata-list-uaf.patch
+    upstream: https://github.com/CESNET/libyang/commit/54c3276d871023da266d4ed3ceaee7e8d71d0b04
+    fix_invariant: lyd_parser_set_data_flags updates list-head pointer only when freeing the actual head; prevents UAF on non-head "default" meta entry
+
+  # CraftCMS
+  - id: craftcms-ghsa-cc7p-impersonate-priv-esc
+    project: CraftCMS
+    ghsa: GHSA-cc7p-2j3x-x7xf
+    ant_id: ANT-2026-ZQ8AY22X
+    severity: high
+    bug_class: privilege-escalation
+    summary: Priv-esc/bypass through UsersController->actionImpersonateWithToken().
+    patch: patches/craftcms-2026-ghsa-cc7p-impersonate-token-privesc.patch
+    upstream: https://github.com/craftcms/cms/commit/6301e217c5f15617d939c432cb770db50af14b33
+    fix_invariant: UsersController->actionImpersonateWithToken verifies caller's permissions against target user before issuing impersonation session
+
+  # mastodon (2)
+  - id: mastodon-ghsa-chgx-ld-signature-bypass
+    project: mastodon
+    ghsa: GHSA-chgx-jx3p-rf73
+    ant_id: ANT-2026-P2DWB2SK
+    severity: high
+    bug_class: signature-bypass
+    summary: LD-Signature bypass via JSON-LD named-graph restructuring.
+    patch: patches/mastodon-2026-ghsa-chgx-ld-sig-bypass.patch
+    upstream: https://github.com/mastodon/mastodon/commit/70351093688d369305c2caf7c6415149a90cc6bb
+    fix_invariant: LinkedDataSignature + JsonLdHelper normalize JSON-LD before signature verify (rejects named-graph restructuring that hides signed-payload swap)
+
+  - id: mastodon-ghsa-crr4-ipv6-unspecified-ssrf
+    project: mastodon
+    ghsa: GHSA-crr4-7rm4-8gpw
+    ant_id: ANT-2026-6DSMTXZ8
+    severity: high
+    bug_class: ssrf
+    summary: SSRF bypass via IPv6 unspecified address `::`, IPv4-mapped IPv6, and other private ranges.
+    patch: patches/mastodon-2026-ghsa-crr4-ssrf-ipv6-bypass.patch
+    upstream: https://github.com/mastodon/mastodon/commit/c77da409aa98e5a2c43bfc5263289e76597a895b
+    fix_invariant: PrivateAddressCheck refactored to include IPv6 unspecified, IPv4-mapped IPv6, and additional private ranges across ipaddr versions
+
+  # gitoxide
+  - id: gitoxide-ghsa-f26g-submodule-rce
+    project: GitoxideLabs/gitoxide
+    ghsa: GHSA-f26g-jm89-4g65
+    ant_id: ANT-2026-6SNS6KMP
+    severity: high
+    bug_class: rce
+    summary: RCE when updating a Git submodule of a malicious repository (proper enforcement of prior incomplete fix).
+    patch: patches/gitoxide-2026-ghsa-f26g-submodule-update-rce.patch
+    upstream: https://github.com/GitoxideLabs/gitoxide/commit/e3ca1e64b0bcd627c7c5d3620f891cc22d1d03c7
+    fix_invariant: gix-submodule update field sourced from .gitmodules is strictly forbidden in CommandForbiddenInModulesConfiguration
+
+  # junrar
+  - id: junrar-ghsa-j273-backslash-traversal
+    project: junrar
+    ghsa: GHSA-j273-m5qq-6825
+    cve: CVE-2026-28208
+    ant_id: ANT-2026-9VJ9JJXQ
+    severity: medium
+    bug_class: path-traversal
+    summary: Arbitrary file write due to backslash path traversal on Linux/Unix.
+    patch: patches/junrar-2026-28208-backslash-path-traversal.patch
+    upstream: https://github.com/junrar/junrar/commit/947ff1d33f00f940aa68ae2593500291d799d954
+    fix_invariant: LocalFolderExtractor normalizes `\` to `/` on Linux/Unix before path-traversal check; rejects ..\ escape
+
+  # freerdp — 3 distinct findings, each landed in its own commit; agent mapped GHSA→bug-location
+  - id: freerdp-ghsa-mpxh-cliprdr-capslen
+    project: freerdp
+    ghsa: GHSA-mpxh-8fq3-x8mh
+    ant_id: ANT-2026-H97FY6C8
+    severity: high
+    bug_class: heap-buffer-overflow
+    summary: Heap-buffer-overflow in cliprdr_main.c:547 via attacker-controlled capabilitySetLength.
+    patch: patches/freerdp-2026-ghsa-mpxh-cliprdr-capslen-overflow.patch
+    upstream: https://github.com/FreeRDP/FreeRDP/commit/0fba1f4dbff7585c9c99873d7c07d7dac46510c3
+    fix_invariant: cliprdr_main.c validates capabilitySetLength in server caps before downstream read
+
+  - id: freerdp-ghsa-mvpx-planar-bounds
+    project: freerdp
+    ghsa: GHSA-mvpx-xj7r-3p3r
+    ant_id: ANT-2026-HN9XZXJ9
+    severity: medium
+    bug_class: heap-buffer-overflow
+    summary: heap-buffer-overflow write in planar.c:472 via attacker-controlled RLE delta offset/length (up to ~15kb past pTempData).
+    patch: patches/freerdp-2026-ghsa-mvpx-planar-bounds.patch
+    upstream: https://github.com/FreeRDP/FreeRDP/commit/4a065a941ae134a0433d1497c03b3c3eb91b9f85
+    fix_invariant: libfreerdp/codec/planar.c adds bounds checks around planar.c:472 decode loop
+
+  - id: freerdp-ghsa-p6r2-gfx-bounds
+    project: freerdp
+    ghsa: GHSA-p6r2-4hgm-m6ff
+    ant_id: ANT-2026-RXYVE4DZ
+    severity: high
+    bug_class: heap-buffer-overflow
+    summary: Heap-buffer-overflow in gfx.c surface decode (originally reported via ASAN frame sanitizer_common_interceptors.inc:827).
+    patch: patches/freerdp-2026-ghsa-p6r2-gfx-bounds.patch
+    upstream: https://github.com/FreeRDP/FreeRDP/commit/f951d8677ce6d34d9778b951f73b3072b01853cb
+    fix_invariant: libfreerdp/gdi/gfx.c bounds checks in surface decode path (the real bug behind the ASAN interceptor frame)
+
+  # Ghost
+  - id: ghost-ghsa-w52v-content-api-sqli
+    project: TryGhost/Ghost
+    ghsa: GHSA-w52v-v783-gw97
+    cve: CVE-2026-26980
+    ant_id: ANT-2026-H5T8XKWR
+    severity: critical
+    bug_class: sql-injection
+    summary: SQL injection in Content API filter parsing.
+    patch: patches/ghost-2026-26980-content-api-sql-injection.patch
+    upstream: https://github.com/TryGhost/Ghost/commit/30868d632b2252b638bc8a4c8ebf73964592ed91
+    fix_invariant: Content API filter parser rejects/escapes operators that previously composed into raw SQL; switches to parameterized query construction
+
+  # ImageMagick
+  - id: imagemagick-ghsa-x9h5-mvg-pattern-overflow
+    project: ImageMagick
+    ghsa: GHSA-x9h5-r9v2-vcww
+    cve: CVE-2026-33901
+    ant_id: ANT-2026-T44WA684
+    severity: high
+    bug_class: heap-buffer-overflow
+    summary: Heap buffer overflow in MVG pattern rendering via CopyMagickString without bounds check.
+    patch: patches/imagemagick-2026-33901-mvg-pattern-overflow.patch
+    upstream: https://github.com/ImageMagick/ImageMagick/commit/4c72003e9e54a4ebaa938d239e75f5d285527ebe
+    fix_invariant: MVG pattern renderer replaces CopyMagickString with bounded copy and verifies pattern token length before write
+
+  # minio
+  - id: minio-ghsa-xh8f-xl-storage-traversal
+    project: minio
+    ghsa: GHSA-xh8f-g2qw-gcm7
+    cve: CVE-2026-42600
+    ant_id: ANT-2026-BRQZSDGZ
+    severity: medium
+    bug_class: path-traversal
+    summary: path-traversal at cmd/xl-storage.go:3194-3218 reached via cmd/storage-rest-server.go ReadMultiple handler.
+    patch: patches/minio-2026-42600-readmultiple-path-traversal.patch
+    upstream: https://github.com/minio/minio/commit/f939d1c1831c71f4b1c14df6d9cd62b12ccce7a3
+    fix_invariant: xl-storage.go + storage-rest-server.go ReadMultiple validates msgpack-supplied file paths stay inside disk root
 
 n_day_exploit_chain_primitives_not_mythos_discoveries:
   - id: linux-ipset-bitmap-range-check
