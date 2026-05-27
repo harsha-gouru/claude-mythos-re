@@ -1,0 +1,253 @@
+From 6301e217c5f15617d939c432cb770db50af14b33 Mon Sep 17 00:00:00 2001
+From: brandonkelly <brandon@pixelandtonic.com>
+Date: Wed, 18 Feb 2026 12:41:00 -0800
+Subject: [PATCH] Fixed GHSA-cc7p-2j3x-x7xf
+
+---
+ CHANGELOG.md              |  6 +++++
+ src/helpers/UrlHelper.php |  8 ++++++-
+ src/services/Tokens.php   | 49 ++++++++++++++++++++++++++++++++++-----
+ src/web/Controller.php    |  3 ++-
+ src/web/Request.php       | 39 +++++++++++++++++++++++++++----
+ src/web/UrlManager.php    |  7 ++----
+ 6 files changed, 94 insertions(+), 18 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 9a940756613..ddca7497e41 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,11 @@
+ # Release Notes for Craft CMS 4
+ 
++## Unreleased
++
++- Added `craft\services\Tokens::getRemainingTokenUsages()`.
++- Added `craft\web\Request::getTokenRoute()`.
++- Fixed a [high-severity](https://github.com/craftcms/cms/security/policy#severity--remediation) permission escalation vulnerability. (GHSA-cc7p-2j3x-x7xf)
++
+ ## 4.17.5 - 2026-02-17
+ 
+ - Added `craft\web\Request::getWantsImage()`.
+diff --git a/src/helpers/UrlHelper.php b/src/helpers/UrlHelper.php
+index c29f01f2a6a..737b3b90443 100644
+--- a/src/helpers/UrlHelper.php
++++ b/src/helpers/UrlHelper.php
+@@ -658,9 +658,15 @@ private static function _createUrl(
+                 $params[$generalConfig->siteToken] = $siteToken;
+             }
+             if ($request->getIsSiteRequest()) {
+-                if ($addToken && !isset($params[$generalConfig->tokenParam]) && ($token = $request->getToken()) !== null) {
++                if (
++                    $addToken &&
++                    !isset($params[$generalConfig->tokenParam]) &&
++                    ($token = $request->getToken()) !== null &&
++                    Craft::$app->getTokens()->getRemainingTokenUsages($token) !== 0
++                ) {
+                     $params[$generalConfig->tokenParam] = $token;
+                 }
++
+                 if (
+                     !isset($params['x-craft-preview']) &&
+                     !isset($params['x-craft-live-preview']) &&
+diff --git a/src/services/Tokens.php b/src/services/Tokens.php
+index 37dff3c34b0..a3cb272a6d7 100644
+--- a/src/services/Tokens.php
++++ b/src/services/Tokens.php
+@@ -34,6 +34,12 @@ class Tokens extends Component
+      */
+     private bool $_deletedExpiredTokens = false;
+ 
++    /**
++     * @var array<string,int|null>
++     * @see getRemainingTokenUsages()
++     */
++    private array $_remainingTokenUsages = [];
++
+     /**
+      * Creates a new token and returns it.
+      * ---
+@@ -137,24 +143,25 @@ public function getTokenRoute(string $token): array|false
+                 ->one();
+ 
+             if (!$result) {
+-                // Remove it from the request  so it doesn’t get added to generated URLs
+-                Craft::$app->getRequest()->setToken(null);
++                $this->_remainingTokenUsages[$token] = 0;
+                 return false;
+             }
+ 
+             // Usage limit enforcement (for future requests)
+             if ($result['usageLimit']) {
+                 // Does it have any more life after this?
+-                if ($result['usageCount'] < $result['usageLimit'] - 1) {
++                $newUsageCount = $result['usageCount'] + 1;
++                if ($newUsageCount < $result['usageLimit']) {
+                     // Increment its count
+                     $this->incrementTokenUsageCountById($result['id']);
++                    $this->_remainingTokenUsages[$token] = $result['usageLimit'] - $newUsageCount;
+                 } else {
+                     // Just delete it
+                     $this->deleteTokenById($result['id']);
+-
+-                    // Remove it from the request as well so it doesn’t get added to generated URLs
+-                    Craft::$app->getRequest()->setToken(null);
++                    $this->_remainingTokenUsages[$token] = 0;
+                 }
++            } else {
++                $this->_remainingTokenUsages[$token] = null;
+             }
+ 
+             return (array)Json::decodeIfJson($result['route']);
+@@ -163,6 +170,36 @@ public function getTokenRoute(string $token): array|false
+         }
+     }
+ 
++    /**
++     * Returns the remaining usage count for a given token, if it has a limit.
++     *
++     * @param string $token
++     * @return int|null
++     * @since 4.17.6
++     */
++    public function getRemainingTokenUsages(string $token): ?int
++    {
++        if (!array_key_exists($token, $this->_remainingTokenUsages)) {
++            $result = (new Query())
++                ->select(['usageLimit', 'usageCount'])
++                ->from([Table::TOKENS])
++                ->where(['token' => $token])
++                ->one();
++
++            if ($result) {
++                if ($result['usageLimit']) {
++                    $this->_remainingTokenUsages[$token] = $result['usageLimit'] - $result['usageCount'];
++                } else {
++                    $this->_remainingTokenUsages[$token] = null;
++                }
++            } else {
++                $this->_remainingTokenUsages[$token] = 0;
++            }
++        }
++
++        return $this->_remainingTokenUsages[$token];
++    }
++
+     /**
+      * Increments a token's usage count.
+      *
+diff --git a/src/web/Controller.php b/src/web/Controller.php
+index a5c16a9281f..9c7b5f9da63 100644
+--- a/src/web/Controller.php
++++ b/src/web/Controller.php
+@@ -526,7 +526,8 @@ public function requireAcceptsJson(): void
+      */
+     public function requireToken(): void
+     {
+-        if (!$this->request->getHadToken()) {
++        $tokenRoute = $this->request->getTokenRoute()[0] ?? null;
++        if ($tokenRoute !== $this->getRoute()) {
+             throw new BadRequestHttpException('Valid token required');
+         }
+     }
+diff --git a/src/web/Request.php b/src/web/Request.php
+index f854e2081a2..a5b36d5730a 100644
+--- a/src/web/Request.php
++++ b/src/web/Request.php
+@@ -17,6 +17,7 @@
+ use craft\helpers\StringHelper;
+ use craft\models\Site;
+ use craft\services\Sites;
++use craft\services\Tokens;
+ use yii\base\InvalidArgumentException;
+ use yii\base\InvalidConfigException;
+ use yii\db\Exception as DbException;
+@@ -197,6 +198,12 @@ class Request extends \yii\web\Request
+      */
+     public ?string $_token = null;
+ 
++    /**
++     * @var array|null
++     * @see getTokenRoute()
++     */
++    public ?array $_tokenRoute = null;
++
+     /**
+      * @inheritdoc
+      */
+@@ -510,7 +517,7 @@ public function getHadToken(): bool
+      *
+      * @return string|null The token, or `null` if there isn’t one.
+      * @throws BadRequestHttpException if an invalid token is supplied
+-     * @see \craft\services\Tokens::createToken()
++     * @see Tokens::createToken()
+      * @see Controller::requireToken()
+      */
+     public function getToken(): ?string
+@@ -519,6 +526,21 @@ public function getToken(): ?string
+         return $this->_token;
+     }
+ 
++    /**
++     * Returns the route the request’s token resolves to.
++     *
++     * @return array|null The route, or `null` if there isn’t one.
++     * @throws BadRequestHttpException if an invalid token is supplied
++     * @see getToken())
++     * @see Tokens::createToken()
++     * @since 4.17.6
++     */
++    public function getTokenRoute(): ?array
++    {
++        $this->_findToken();
++        return $this->_tokenRoute;
++    }
++
+     /**
+      * Sets the token value.
+      *
+@@ -549,10 +571,17 @@ private function _findToken(): void
+ 
+         $this->_token = ($this->getQueryParam($this->generalConfig->tokenParam) ?? $this->getHeaders()->get('X-Craft-Token')) ?: null;
+ 
+-        if ($this->_token && !preg_match('/^[A-Za-z0-9_-]+$/', $this->_token)) {
+-            $this->_token = null;
+-            $this->_hadToken = false;
+-            throw new BadRequestHttpException('Invalid token');
++        if ($this->_token) {
++            if (!preg_match('/^[A-Za-z0-9_-]+$/', $this->_token)) {
++                $this->_token = null;
++                $this->_hadToken = false;
++                throw new BadRequestHttpException('Invalid token');
++            }
++
++            $this->_tokenRoute = Craft::$app->getTokens()->getTokenRoute($this->_token) ?: null;
++            if (!$this->_tokenRoute) {
++                $this->_token = null;
++            }
+         }
+ 
+         $this->_hadToken = isset($this->_token);
+diff --git a/src/web/UrlManager.php b/src/web/UrlManager.php
+index 9af83c76b5d..4c3e2f9b0a2 100644
+--- a/src/web/UrlManager.php
++++ b/src/web/UrlManager.php
+@@ -548,6 +548,7 @@ private function _getTokenRoute(Request $request): array|false
+         }
+ 
+         $token = $request->getToken();
++        $route = $request->getTokenRoute();
+ 
+         if (App::devMode()) {
+             Craft::debug([
+@@ -557,10 +558,6 @@ private function _getTokenRoute(Request $request): array|false
+             ], __METHOD__);
+         }
+ 
+-        if ($token === null) {
+-            return false;
+-        }
+-
+-        return Craft::$app->getTokens()->getTokenRoute($token);
++        return $route ?? false;
+     }
+ }

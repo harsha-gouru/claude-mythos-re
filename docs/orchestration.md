@@ -1,140 +1,131 @@
 # Claude Mythos RE
 
-Reverse-engineering the **orchestration pattern** behind Claude Mythos-style vulnerability discovery from the public bugs it helped fix.
+Reverse-engineering Mythos-style vulnerability discovery from primary sources, then designing a manual scaffold that approximates it for non-Mythos models.
 
-> This is defensive research. It does not include exploit code or weaponized PoCs. The goal is to understand how an agentic system can reason over huge codebases without loading the whole repo into context.
+> Defensive research. No exploit code, no weaponized PoCs.
 
 **Tag:** `claude-mythos-re`
 
-## Thesis
+## Updated 2026-05-27 — corrected after reading the system card
 
-Mythos probably does **not** read a whole codebase in one context window. The public fixes point to a different architecture:
+The earlier thesis on this page ("Mythos uses small slices + persistent memory + specialist agent swarm + proof loops") was **partially wrong**. Anthropic's [Claude Mythos Preview System Card](https://www-cdn.anthropic.com/08ab9158070959f88f296514c21b7facce6f52bc.pdf) (April 7, 2026, 245 pages) and the [coordinated vulnerability disclosure dashboard](https://red.anthropic.com/2026/cvd/) make the actual architecture clearer.
+
+Key corrections:
+1. Mythos is **one model + one thin agentic harness**, not a coordinator-with-specialists.
+2. Mythos's context window is 1M tokens, not "small slices only". Per task it uses ~226K tokens vs Opus 4.6's 1.11M (system card §8) — it slices smartly, but the harness doesn't enforce small slices.
+3. **Subagent spawning is in-model behavior**, not a hand-coded scaffold (§4.2.3, §7).
+4. The 23,019 → 1,900 → 1,726 → 1,596 disclosure funnel is **a separate human/firm triage pipeline**, not the discovery engine.
+
+The Mythos-specific scanner pattern catalog further down this page (sentinel collision, ownership transfer early-return, etc.) is still useful as scaffold-side guidance for non-Mythos models. The 12-box agent flowchart that used to live here is removed; see `docs/replications-diff.md` for why those reconstructions don't match Anthropic's own description.
+
+## What Mythos actually is (primary-source)
+
+From the system card §3.1:
+
+> *"Claude Mythos Preview is a step-change in vulnerability discovery and exploitation: using an agentic harness with **minimal human steering**, it is able to autonomously find zero-days in both open-source and closed-source software… and in many cases, develop the identified vulnerabilities into working proof-of-concept exploits."*
+
+Concretely (§3.3.1–3.3.3, §7, §8):
+
+- **Model**: a specialized frontier checkpoint, internally codenamed Capybara, sits above Opus 4.6, 1M-token context. Saturates Cybench (100% pass@1), CyberGym 0.83 vs Opus 4.6's 0.67 (same harness, model-only delta), and dominates Firefox 147 SpiderMonkey exploit construction (leverages 4 distinct bugs to RCE; Opus 4.6 leverages 1 unreliably).
+- **Harness**: container + target source + a testing harness tailored to the artifact (e.g. SpiderMonkey shell mimicking a Firefox content process without sandbox) + standard tools (compiler, ASan/UBSan, gdb, shell). Named scaffolds in the card: `Terminus-2` for Terminal-Bench, `Harbor` as the overall agentic infrastructure, plus a SWE-bench Multimodal test harness. No special "Mythos cyber pipeline" is described — the cyber tasks reuse the generic agentic substrate.
+- **Subagents**: spawned by Mythos itself at runtime. §4 (~line 2417): *"Mythos Preview (which is directing the subagents) successfully follows up with its subagents until it is justifiably confident."* §7 (~line 6996): *"fires off subagents to parallelize research."* §7 (~line 7016): *"when one of its own subagents returned incorrect information, Claude Mythos Preview noticed, diagnosed why the subagent had made a mistake, and fixed the underlying issue."*
+- **Pacing**: $20/$100 per M input/output tokens for partner access (per CSA's recap of Anthropic's announcement). Mythos uses *fewer* tokens per task than Opus 4.6 on long-context evals (§8).
+
+So Mythos is **not** "one giant context loading whole codebases" *and* **not** "a hand-coded multi-agent pipeline". It's a strong model in a thin harness that decides for itself when to fan out and remembers what its subagents have found inside its long context.
+
+## The disclosure pipeline is a separate layer
+
+The big multi-stage funnel on the dashboard happens **after** the model finds a bug:
 
 ```text
-small code slices + persistent memory + invariant scanners + specialist agents + proof loops
+Mythos discovery (model + harness)
+  ↓
+23,019 candidate findings
+  ↓ (Anthropic / 6 external firms triage)
+1,900 reviewed
+  ↓ (90.8% TPR)
+1,726 verified
+  ↓ (capacity-bounded)
+1,596 reported to maintainers
+  ↓ (median 0.2 days)
+1,451 acknowledged
+  ↓ (median 6.2 days)
+97 patched · 88 CVE/GHSA · 26 public as of 2026-05-22
 ```
 
-The strongest public examples are not random syntax bugs. They are broken invariants:
+This is operational orchestration — human reviewers, security firms, maintainer outreach, hash-commitment ledger (SHA-3-512 per finding). It does not describe what the model does. See `docs/disclosure-policy.md` for the CVD timelines (90d default / 7d active-exploit / 30d non-response / 45d post-patch detail hold).
 
-| Project | Public bug shape | Invariant that broke |
-|---|---|---|
-| OpenBSD TCP SACK | integer overflow -> invalid sequence accepted -> kernel crash | sequence ranges must be valid before SACK list handling |
-| OpenBSD pgrp/fork | raceable stale process-group pointer | half-created child must not inherit live ownership pointers |
-| FFmpeg H.264 | `0xFFFF` sentinel collision after 65,536 slices | runtime IDs must not equal sentinel values |
-| FFmpeg MPEG-TS | stack OOB from shifted pointer + original capacity | remaining capacity must follow shifted output base |
-| FFmpeg JPEG-XS/MPEG-TS | UAF after early return post ownership transfer | ownership transfer needs unified cleanup paths |
-| FreeBSD RPCSEC_GSS | unauthenticated stack overflow | protocol length must be bounded by destination size |
-| FreeBSD TTY | dangling tty/session back-pointers | detach must clear both sides of a relationship |
-| FreeBSD PKRU | largepage/boundary traversal miss | page-table walkers need every leaf/boundary case |
-| Linux futex | mixed flags break lifetime assumptions -> UAF | requeue endpoints must share object semantics |
-| Botan | certificate validation bypass | trust equality cannot be DN/SKI metadata equality |
-| wolfSSL | signature verification invariant gap | digest size, key type, and signature OID must agree |
-| Firefox 150 | DOM/Wasm/memory-safety batch | many browser invariants break only in rare state combinations |
+## Manual scaffold for non-Mythos models
 
-## Orchestration layer
+Mythos is invitation-only. To approximate it with public models (Opus 4.7, GPT-5.5, DeepSeek V4), externalize what Mythos does in-model:
+
+| Mythos in-model | mythos-lite external |
+|---|---|
+| Plans what to look at next | Explicit planner pass — one Opus call, max thinking |
+| Spawns and directs subagents | Coordinator script that fans out N parallel Claude Code CLI sessions |
+| Catches subagent mistakes | Cross-model validator + skeptical re-read |
+| Holds plan + facts in 1M ctx | SQLite engagement graph |
+| Uses sanitizers, shells, debuggers | Scratch build sandbox + ASan/UBSan |
+| Proves the bug with a PoC | Subprocess verification gate with sentinel-write |
+
+Full design lives in `docs/mythos-lite-v0.md`. The 7-phase pipeline:
 
 ```mermaid
 flowchart TD
-    U[Goal: find defensive bug patterns] --> C[Coordinator Agent]
+    A[0 language detect] --> B[1 sink slice]
+    B --> C[2 file rank]
+    C --> D[3 engagement plan<br/>Opus 4.7 max thinking]
+    D --> E[4 parallel hunters<br/>claude -p sessions]
+    E --> F[5 cross-model validator<br/>GPT-5.5]
+    F --> G[6 executable verifier<br/>subprocess PoC]
+    G --> H[7 aggregate + FP memory]
 
-    C --> I[Repo Indexer]
-    I --> CG[(Code Graph)]
-    I --> M[(Memory / Evidence Store)]
-
-    C --> S[Scout Swarm]
-    S --> S1[Sentinel Scanner]
-    S --> S2[Bounds + Capacity Scanner]
-    S --> S3[Ownership + Lifetime Scanner]
-    S --> S4[Parser + Taint Scanner]
-    S --> S5[Crypto Invariant Scanner]
-    S --> S6[Concurrency + Race Scanner]
-
-    S1 --> Q[Candidate Queue]
-    S2 --> Q
-    S3 --> Q
-    S4 --> Q
-    S5 --> Q
-    S6 --> Q
-
-    Q --> SB[Slice Builder]
-    SB --> CG
-    SB --> M
-    SB --> T[Triage Agent]
-
-    T --> P[Proof Agent]
-    P --> R[Reachability Agent]
-    R --> PC[Primitive Classifier]
-    PC --> CH[Chain Reasoner]
-    CH --> PA[Patch + Regression Agent]
-    PA --> V[Verifier Agent]
-
-    T --> M
-    P --> M
-    R --> M
-    PC --> M
-    CH --> M
-    PA --> M
-    V --> M
-
-    M --> C
-    C --> O[Patch Card / Defensive Report]
+    F -- disagreement --> M[moderator<br/>Opus 4.7]
+    M --> G
 ```
 
-## Why memory is central
+This is closer to Keyvanhardani's bash scaffold than FareedKhan's notebook reconstruction. See `docs/replications-diff.md` for the comparison.
 
-A big repo needs a shared blackboard. Agent chat history is not enough.
+## Public bug atlas (still load-bearing)
 
-```mermaid
-flowchart LR
-    M[Memory Agent]
+The scanner families below still hold value: they're the **patterns mythos-lite hunters should be primed to look for** in any source tree, regardless of which model is doing the hunting. They're derived from public fixes attributable to Mythos-style discovery.
 
-    M --> CI[(Code Index)]
-    CI --> CI1[files]
-    CI --> CI2[symbols]
-    CI --> CI3[call graph]
-    CI --> CI4[type graph]
+| Project | Public bug shape | Invariant restored |
+|---|---|---|
+| nginx WebDAV | size_t underflow → unauth file write (CVE-2026-27654) | destination URI bounds before alias path build |
+| wolfSSL (×9 CVEs) | nonce reuse, sig forgery, CMAC wraparound, ECH overflow, cert bypass | crypto invariants per primitive |
+| Nomad | path traversal in `host_volume_plugin.go` (CVE-2026-7474) | filename sanitization at sink |
+| Temporal | cross-namespace workflow manipulation (CVE-2026-5199) | namespace boundary enforcement |
+| Ghost SQLi | Content API SQL injection (GHSA-w52v-v783-gw97) | parameterized queries at API surface |
+| FFmpeg H.264 | 0xFFFF sentinel collision after 65,536 slices | runtime IDs must not equal sentinel values |
+| FFmpeg MPEG-TS IOD | stack OOB from shifted pointer + original capacity | pass remaining capacity after pointer shift |
+| FFmpeg JPEG-XS | UAF after early return post ownership transfer | ownership transfer needs unified cleanup |
+| FreeBSD RPCSEC_GSS | unauthenticated stack overflow | protocol length bounded by destination size |
+| FreeBSD TTY | dangling tty/session back-pointers | detach clears both sides of relation |
+| FreeBSD PKRU | largepage/boundary traversal miss | walkers cover every leaf and boundary |
+| OpenBSD TCP SACK | integer overflow → invalid seq accepted | sequence range validation before SACK list |
+| OpenBSD pgrp/fork | stale back-pointer on fork | half-created child must not inherit live ownership |
+| Linux futex | mixed flags → UAF | both endpoints share lifetime semantics |
+| Botan | weak-equivalence cert trust | trust equality cannot be DN/SKI metadata equality |
+| Mastodon | LD-Sig bypass, IPv6 SSRF | canonical JSON-LD + address validation |
+| Firefox 147/150 | DOM/Wasm batch | rare state combos need invariant hardening |
 
-    M --> FS[(Fact Store)]
-    FS --> FS1[invariants]
-    FS --> FS2[ownership rules]
-    FS --> FS3[buffer sizes]
-    FS --> FS4[sentinel domains]
-    FS --> FS5[input trust boundaries]
+The dashboard payload (`mythos_payload.json` from red.anthropic.com) shows the full bug-class distribution across all 1,596 disclosed findings: heap-buffer-overflow 162, auth-bypass 116, broken-access-control 88, type-confusion 71, denial-of-service 66, use-after-free 56, stack-buffer-overflow 49. The "other" bucket is 512 — taxonomy is coarse.
 
-    M --> CS[(Candidate Store)]
-    CS --> CS1[open]
-    CS --> CS2[rejected]
-    CS --> CS3[confirmed]
-    CS --> CS4[needs reachability]
+## Memory is still central (for non-Mythos models)
 
-    M --> HM[(Historical Bug Memory)]
-    HM --> HM1[FFmpeg sentinel collision]
-    HM --> HM2[OpenBSD stale pgrp]
-    HM --> HM3[FreeBSD stack copy]
-    HM --> HM4[Botan weak cert equality]
-    HM --> HM5[wolfSSL crypto invariant]
+Mythos holds everything in 1M context. Non-Mythos models need an external blackboard. For mythos-lite, that's the SQLite engagement graph (six tables, lifted from FareedKhan's reconstruction with two additions for FP memory):
 
-    M --> EV[(Evidence Store)]
-    EV --> EV1[file spans]
-    EV --> EV2[commit diffs]
-    EV --> EV3[test output]
-    EV --> EV4[negative findings]
-```
+- `surface` — endpoints, routes, sink call sites
+- `facts` — atomic statements an agent has confirmed
+- `hypotheses` — candidates with status (open / testing / confirmed / refuted)
+- `findings` — confirmed bugs with evidence + corroborators + verifier result
+- `dead_ends` — paths explored and ruled out
+- `chains` — assembled attack paths (deferred to v1)
+- `dismissals` — cross-session FP memory keyed by `target_id`
+- `runs` — engagement metadata
 
-Memory should store evidence, not vibes.
-
-```yaml
-candidate_id: ffmpeg-h264-slice-sentinel
-pattern: sentinel_collision
-file: libavcodec/h264_slice.c
-invariant: slice_num must never equal 0xFFFF sentinel
-evidence:
-  - slice_table is uint16_t
-  - empty entries initialized with memset(..., -1, ...)
-  - current_slice increments without cap
-  - fix rejects slice_num >= 0xFFFF
-status: confirmed_public_fix
-```
+Schema details in `docs/mythos-lite-v0.md`.
 
 ## Candidate lifecycle
 
@@ -160,9 +151,11 @@ stateDiagram-v2
     Confirmed --> PatternMemory
 ```
 
+In mythos-lite this maps to: hunter → validator → moderator (on disagreement) → verifier → engagement-graph status transitions → dismissals writeback.
+
 ## Context packet per agent
 
-Each specialist should receive a bounded packet, not the repo:
+Each subagent gets a bounded packet, not the repo:
 
 ```yaml
 context_packet:
@@ -179,9 +172,11 @@ context_packet:
   task: prove or disprove length-to-copy overflow
 ```
 
+For mythos-lite this is assembled by the coordinator from the engagement graph plus the sink-slicer output before each hunter call.
+
 ## Primitive graph, not exploit script
 
-The chain reasoner should model defensive primitives only.
+The chain reasoner (deferred to v1) should model defensive primitives only.
 
 ```mermaid
 flowchart LR
@@ -197,7 +192,7 @@ flowchart LR
     style F fill:#d0bfff,stroke:#8b5cf6
 ```
 
-No PoC needed. The useful output is:
+Output is a defensive description, never a weaponized PoC:
 
 ```yaml
 primitive_chain:
@@ -209,94 +204,66 @@ primitive_chain:
   weaponized_poc: false
 ```
 
-## Scanner families
+## Scanner families (hunter prompts should be primed for these)
 
 ### 1. Sentinel collision scanner
-
-Looks for:
 
 ```text
 small integer table + memset(-1) + monotonic counter + equality guard
 ```
-
 Public example: FFmpeg H.264 `0xFFFF` slice sentinel.
 
 ### 2. Shifted pointer / capacity scanner
 
-Looks for:
-
 ```text
 callee(ptr + used, original_capacity)
 ```
-
 Public example: FFmpeg MPEG-TS IOD descriptor accounting.
 
 ### 3. Ownership transfer early-return scanner
 
-Looks for:
-
 ```text
 object->buf = other->buf
-if (invalid) return error
-cleanup later assumes old owner
+if (invalid) return error    // cleanup later assumes old owner
 ```
-
 Public example: FFmpeg MPEG-TS JPEG-XS UAF.
 
 ### 4. Protocol length copy scanner
 
-Looks for:
-
 ```text
 memcpy(stack_dst, input, protocol_len)
 ```
-
-Public example: FreeBSD RPCSEC_GSS stack overflow.
+Public examples: FreeBSD RPCSEC_GSS, nginx WebDAV alias underflow.
 
 ### 5. Bidirectional lifetime scanner
 
-Looks for detach/drop paths that clear only one side:
+Detach/drop paths that clear only one side:
 
 ```text
 session->tty = NULL
 // but tty->session still points back
 ```
-
-Public examples: OpenBSD pgrp and FreeBSD TTY.
+Public examples: OpenBSD pgrp, FreeBSD TTY.
 
 ### 6. Crypto invariant scanner
 
-Looks for trust decisions based on weak equivalence:
+Trust decisions based on weak equivalence:
 
 ```text
 same subject/key id == same certificate
 signature verifies without digest/key/OID agreement
+nonce reuse in AEAD
+truncated AEAD tag accepted
 ```
+Public examples: Botan, the 9 wolfSSL CVEs from the May-20 disclosure batch.
 
-Public examples: Botan and wolfSSL.
-
-## Minimal implementation plan
-
-```mermaid
-flowchart TD
-    A[Phase 1: Repo Index] --> B[ctags/tree-sitter symbols]
-    A --> C[ripgrep pattern hits]
-    B --> D[Candidate Cards]
-    C --> D
-
-    D --> E[Slice Builder]
-    E --> F[LLM Triage]
-    F --> G[Reachability Trace]
-    G --> H[Patch Card]
-    H --> I[Regression Test Sketch]
-    I --> J[Memory Update]
-```
-
-A first version can be simple:
+### 7. Path / boundary scanner
 
 ```text
-rg patterns -> candidate YAML -> slice extraction -> model review -> markdown patch card
+user-supplied path joined to base without canonicalization
+namespace identifier accepted without scope check
 ```
+Public examples: Nomad path traversal, Temporal cross-namespace, MinIO storage path.
 
 ## Good output format
 
@@ -317,12 +284,20 @@ risk: kernel object lifetime bug
 
 ## Research stance
 
-This repo is about learning from public fixes:
+This repo is about learning from public fixes and externalizing Mythos's in-model behavior for public models:
 
-- understand the invariant
+- understand the invariant that broke
 - understand why humans/fuzzers missed it
-- build defensive scanners
+- build defensive scanners primed for that pattern
 - produce patch cards and regression ideas
 - avoid weaponized exploit construction
 
-The banger insight: **the agent does not need to know everything. It needs to remember the right invariants and keep asking where the code violates them.**
+The corrected insight: **the model does the hard reasoning. The scaffold's job is to give a non-Mythos model the orchestration that Mythos has built in — parallelism, fresh-context isolation, cross-model skepticism, executable verification, persistent memory.**
+
+## Related docs
+
+- `docs/replications-diff.md` — Keyvanhardani vs FareedKhan code-level comparison
+- `docs/mythos-lite-v0.md` — our scaffold design
+- `docs/bug-atlas.md` — public Mythos-attributable fixes
+- `docs/root-cause-patterns.md` — patterns extracted from those fixes
+- `docs/source-links.md` — primary sources + repo clone map

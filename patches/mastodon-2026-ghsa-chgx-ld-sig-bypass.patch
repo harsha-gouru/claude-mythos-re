@@ -1,0 +1,68 @@
+From 70351093688d369305c2caf7c6415149a90cc6bb Mon Sep 17 00:00:00 2001
+From: Claire <claire.github-309c@sitedethib.com>
+Date: Wed, 20 May 2026 14:38:24 +0200
+Subject: [PATCH] Merge commit from fork
+
+---
+ app/helpers/json_ld_helper.rb                        | 12 ++++++++++++
+ app/lib/activitypub/linked_data_signature.rb         |  1 +
+ .../activitypub/process_collection_service.rb        |  4 ++++
+ 3 files changed, 17 insertions(+)
+
+diff --git a/app/helpers/json_ld_helper.rb b/app/helpers/json_ld_helper.rb
+index f33525dd7bfdfb..2851ca11093d8b 100644
+--- a/app/helpers/json_ld_helper.rb
++++ b/app/helpers/json_ld_helper.rb
+@@ -3,6 +3,8 @@
+ module JsonLdHelper
+   include ContextHelper
+ 
++  UNSUPPORTED_JSONLD_KEYWORDS = %w(@graph @included @reverse).freeze
++
+   def equals_or_includes?(haystack, needle)
+     haystack.is_a?(Array) ? haystack.include?(needle) : haystack == needle
+   end
+@@ -110,6 +112,16 @@ def compact(json)
+     compacted
+   end
+ 
++  def unsupported_jsonld_features?(json)
++    if json.is_a?(Hash)
++      json.any? { |key, value| UNSUPPORTED_JSONLD_KEYWORDS.include?(key) || unsupported_jsonld_features?(value) }
++    elsif json.is_a?(Array)
++      json.any? { |value| unsupported_jsonld_features?(value) }
++    else
++      false
++    end
++  end
++
+   # Patches a JSON-LD document to avoid compatibility issues on redistribution
+   #
+   # Since compacting a JSON-LD document against Mastodon's built-in vocabulary
+diff --git a/app/lib/activitypub/linked_data_signature.rb b/app/lib/activitypub/linked_data_signature.rb
+index c42313b05ee975..62350a6f107eeb 100644
+--- a/app/lib/activitypub/linked_data_signature.rb
++++ b/app/lib/activitypub/linked_data_signature.rb
+@@ -12,6 +12,7 @@ def initialize(json)
+ 
+   def verify_actor!
+     return unless @json['signature'].is_a?(Hash)
++    return if unsupported_jsonld_features?(@json)
+ 
+     type        = @json['signature']['type']
+     creator_uri = @json['signature']['creator']
+diff --git a/app/services/activitypub/process_collection_service.rb b/app/services/activitypub/process_collection_service.rb
+index cadc7d2d10e300..ea548b64630e14 100644
+--- a/app/services/activitypub/process_collection_service.rb
++++ b/app/services/activitypub/process_collection_service.rb
+@@ -13,6 +13,10 @@ def call(body, actor, **options)
+ 
+     begin
+       @json = compact(@json) if @json['signature'].is_a?(Hash)
++      if unsupported_jsonld_features?(@json)
++        Rails.logger.debug { "JSON-LD document for #{value_or_id(@json['actor'])} contains unsupported JSON-LD features" }
++        @json = original_json.without('signature')
++      end
+     rescue JSON::LD::JsonLdError => e
+       Rails.logger.debug { "Error when compacting JSON-LD document for #{value_or_id(@json['actor'])}: #{e.message}" }
+       @json = original_json.without('signature')

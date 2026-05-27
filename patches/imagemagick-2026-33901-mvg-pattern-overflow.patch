@@ -1,0 +1,34 @@
+From 4c72003e9e54a4ebaa938d239e75f5d285527ebe Mon Sep 17 00:00:00 2001
+From: Cristy <urban-warrior@imagemagick.org>
+Date: Tue, 24 Mar 2026 08:17:13 -0400
+Subject: [PATCH] 
+ https://github.com/ImageMagick/ImageMagick/security/advisories/GHSA-x9h5-r9v2-vcww
+
+---
+ MagickCore/draw.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/MagickCore/draw.c b/MagickCore/draw.c
+index 4ad6a9817c1..384912707bb 100644
+--- a/MagickCore/draw.c
++++ b/MagickCore/draw.c
+@@ -3462,7 +3462,8 @@ static MagickBooleanType RenderMVGContent(Image *image,
+                   break;
+                 }
+                 if ((q == (char *) NULL) || (*q == '\0') ||
+-                    (p == (char *) NULL) || ((q-4) < p))
++                    (p == (char *) NULL) || ((q-4) < p) ||
++                    ((q-p+4+1) > MagickPathExtent))
+                   {
+                     status=MagickFalse;
+                     break;
+@@ -3577,7 +3578,8 @@ static MagickBooleanType RenderMVGContent(Image *image,
+                     continue;
+                   break;
+                 }
+-                if ((q == (char *) NULL) || (p == (char *) NULL) || ((q-4) < p))
++                if ((q == (char *) NULL) || (p == (char *) NULL) || ((q-4) < p) ||
++                    ((q-p+4+1) > MagickPathExtent))
+                   {
+                     status=MagickFalse;
+                     break;

@@ -1,0 +1,27 @@
+From ddd246b90acc6c7f920dfd056f33613cebe9154d Mon Sep 17 00:00:00 2001
+From: Even Rouault <even.rouault@spatialys.com>
+Date: Mon, 23 Mar 2026 15:23:03 +0100
+Subject: [PATCH] msSLDParseRasterSymbolizer(): fix potential heap buffer
+ overflow (#7460)
+
+Fixes https://github.com/MapServer/MapServer/security/advisories/GHSA-cv4m-mr84-fgjp
+
+Credits to Trail of Bits and Anthropic for reporting and patch
+suggestion
+---
+ src/mapogcsld.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/mapogcsld.cpp b/src/mapogcsld.cpp
+index 15ca80db50..4c5ed64d9d 100644
+--- a/src/mapogcsld.cpp
++++ b/src/mapogcsld.cpp
+@@ -2894,7 +2894,7 @@ int msSLDParseRasterSymbolizer(CPLXMLNode *psRoot, layerObj *psLayer,
+         } else if (strcasecmp(psNode->pszValue, "Threshold") == 0) {
+           papszThresholds[nThresholds] = psNode->psChild->pszValue;
+           nThresholds++;
+-          if (nValues == nMaxThreshold) {
++          if (nThresholds == nMaxThreshold) {
+             nMaxThreshold += 100;
+             papszThresholds = (char **)msSmallRealloc(
+                 papszThresholds, sizeof(char *) * nMaxThreshold);

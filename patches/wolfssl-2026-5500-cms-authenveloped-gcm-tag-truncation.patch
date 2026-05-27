@@ -1,0 +1,199 @@
+From a88dd07c70e9415c3daa64d478f9a45bd65f9e5d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Tobias=20Frauenschl=C3=A4ger?= <tobias@wolfssl.com>
+Date: Mon, 30 Mar 2026 15:56:20 +0200
+Subject: [PATCH] pkcs7,aes: reject truncated GCM auth tags
+
+wc_PKCS7_DecodeAuthEnvelopedData() accepted an attacker-controlled GCM tag
+length from the mac OCTET STRING and did not validate it against the
+parsed aes-ICVlen parameter. In parallel, wc_AesGcmDecrypt() accepted
+very short tags on decrypt while encrypt enforced WOLFSSL_MIN_AUTH_TAG_SZ.
+
+This made short-tag verification reachable through CMS AuthEnvelopedData
+and weakened integrity checks by allowing tag truncation.
+
+Fixes:
+- validate parsed macSz range in AuthEnvelopedData decode
+- require authTagSz to match parsed macSz
+- reject undersized GCM tags in PKCS7 decode
+- enforce WOLFSSL_MIN_AUTH_TAG_SZ in wc_AesGcmDecrypt() and
+  wc_AesGcmDecryptFinal()
+
+Also add a regression test in pkcs7authenveloped vectors that truncates
+the final MAC OCTET STRING length from 16 to 1 and verifies decode fails.
+
+Reported by: Nicholas Carlini (Anthropic) & Thai Duong (Calif.io)
+---
+ wolfcrypt/src/aes.c          | 11 +++++-----
+ wolfcrypt/src/pkcs7.c        | 20 ++++++++++++++++-
+ wolfcrypt/test/test.c        | 42 ++++++++++++++++++++++++++++++++++++
+ wolfssl/wolfcrypt/settings.h |  2 ++
+ 4 files changed, 69 insertions(+), 6 deletions(-)
+
+diff --git a/wolfcrypt/src/aes.c b/wolfcrypt/src/aes.c
+index a3b75dbb34b..41b01031c41 100644
+--- a/wolfcrypt/src/aes.c
++++ b/wolfcrypt/src/aes.c
+@@ -10217,8 +10217,9 @@ int  wc_AesGcmDecrypt(Aes* aes, byte* out, const byte* in, word32 sz,
+     /* If the sz is non-zero, both in and out must be set. If sz is 0,
+      * in and out are don't cares, as this is is the GMAC case. */
+     if (aes == NULL || iv == NULL || (sz != 0 && (in == NULL || out == NULL)) ||
+-        authTag == NULL || authTagSz > WC_AES_BLOCK_SIZE || authTagSz == 0 ||
+-        ivSz == 0 || ((authInSz > 0) && (authIn == NULL)))
++        authTag == NULL || authTagSz > WC_AES_BLOCK_SIZE ||
++        authTagSz < WOLFSSL_MIN_AUTH_TAG_SZ || ivSz == 0 ||
++        ((authInSz > 0) && (authIn == NULL)))
+     {
+         return BAD_FUNC_ARG;
+     }
+@@ -10781,8 +10782,8 @@ int wc_AesGcmDecrypt(Aes* aes, byte* out, const byte* in, word32 sz,
+     /* If the sz is non-zero, both in and out must be set. If sz is 0,
+      * in and out are don't cares, as this is is the GMAC case. */
+     if (aes == NULL || iv == NULL || (sz != 0 && (in == NULL || out == NULL)) ||
+-        authTag == NULL || authTagSz > WC_AES_BLOCK_SIZE || authTagSz == 0 ||
+-        ivSz == 0) {
++        authTag == NULL || authTagSz > WC_AES_BLOCK_SIZE ||
++        authTagSz < WOLFSSL_MIN_AUTH_TAG_SZ || ivSz == 0) {
+ 
+         return BAD_FUNC_ARG;
+     }
+@@ -12473,7 +12474,7 @@ int wc_AesGcmEncryptFinal(Aes* aes, byte* authTag, word32 authTagSz)
+ 
+     /* Check validity of parameters. */
+     if ((aes == NULL) || (authTag == NULL) || (authTagSz > WC_AES_BLOCK_SIZE) ||
+-            (authTagSz == 0)) {
++            (authTagSz < WOLFSSL_MIN_AUTH_TAG_SZ)) {
+         ret = BAD_FUNC_ARG;
+     }
+ 
+diff --git a/wolfcrypt/src/pkcs7.c b/wolfcrypt/src/pkcs7.c
+index 9efec15ec7f..174c04d632c 100644
+--- a/wolfcrypt/src/pkcs7.c
++++ b/wolfcrypt/src/pkcs7.c
+@@ -140,6 +140,7 @@ struct PKCS7State {
+     word32 nonceSz;  /* size of nonce stored */
+     word32 aadSz;    /* size of additional AEAD data */
+     word32 tagSz;    /* size of tag for AEAD */
++    word32 icvSz;    /* expected ICV/MAC size from AlgoID parameter */
+     word32 contentSz;
+     word32 currContIdx;   /* index of current content */
+     word32 currContSz;    /* size of current content */
+@@ -14235,6 +14236,10 @@ int wc_PKCS7_DecodeAuthEnvelopedData(wc_PKCS7* pkcs7, byte* in,
+             if (ret == 0 && GetMyVersion(pkiMsg, &idx, &macSz, pkiMsgSz) < 0) {
+                 ret = ASN_PARSE_E;
+             }
++            if (ret == 0 && (macSz <= 0 || macSz > WC_AES_BLOCK_SIZE)) {
++                WOLFSSL_MSG("AuthEnvelopedData invalid MAC length");
++                ret = ASN_PARSE_E;
++            }
+ 
+             if (ret == 0) {
+                 explicitOctet = 0;
+@@ -14280,7 +14285,8 @@ int wc_PKCS7_DecodeAuthEnvelopedData(wc_PKCS7* pkcs7, byte* in,
+                 break;
+             }
+ 
+-            /* store nonce for later */
++            /* store nonce and macSz for later */
++            pkcs7->stream->icvSz = (word32)macSz;
+             if (nonceSz > 0) {
+                 pkcs7->stream->nonceSz = (word32)nonceSz;
+                 pkcs7->stream->nonce = (byte*)XMALLOC((word32)nonceSz,
+@@ -14471,6 +14477,7 @@ int wc_PKCS7_DecodeAuthEnvelopedData(wc_PKCS7* pkcs7, byte* in,
+                 encodedAttribSz = pkcs7->stream->aadSz;
+                 encodedAttribs  = pkcs7->stream->aad;
+             }
++            macSz = (int)pkcs7->stream->icvSz;
+         #endif
+ 
+ 
+@@ -14487,6 +14494,17 @@ int wc_PKCS7_DecodeAuthEnvelopedData(wc_PKCS7* pkcs7, byte* in,
+                 ret = ASN_PARSE_E;
+             }
+             authTagSz = (word32)length;
++            if (ret == 0 && authTagSz != (word32)macSz) {
++                WOLFSSL_MSG("AuthEnvelopedData authTag size mismatch");
++                ret = ASN_PARSE_E;
++            }
++            if (ret == 0 &&
++                    (encOID == AES128GCMb || encOID == AES192GCMb ||
++                     encOID == AES256GCMb) &&
++                    authTagSz < WOLFSSL_MIN_AUTH_TAG_SZ) {
++                WOLFSSL_MSG("AuthEnvelopedData GCM authTag too small");
++                ret = ASN_PARSE_E;
++            }
+ 
+         #ifndef NO_PKCS7_STREAM
+             /* there might not be enough data for the auth tag too */
+diff --git a/wolfcrypt/test/test.c b/wolfcrypt/test/test.c
+index 755aa94358e..8077342566b 100644
+--- a/wolfcrypt/test/test.c
++++ b/wolfcrypt/test/test.c
+@@ -57721,6 +57721,9 @@ static wc_test_ret_t pkcs7authenveloped_run_vectors(byte* rsaCert, word32 rsaCer
+     wc_test_ret_t ret = 0;
+     int testSz = 0, i;
+     int envelopedSz, decodedSz;
++#ifdef HAVE_AESGCM
++    int tagTruncationChecked = 0;
++#endif
+ 
+     byte   *enveloped = NULL;
+     byte   *decoded = NULL;
+@@ -58232,6 +58235,45 @@ static wc_test_ret_t pkcs7authenveloped_run_vectors(byte* rsaCert, word32 rsaCer
+             ERROR_OUT(WC_TEST_RET_ENC_NC, out);
+         }
+ 
++#ifdef HAVE_AESGCM
++        if (tagTruncationChecked == 0 &&
++                (testVectors[i].encryptOID == AES128GCMb ||
++                 testVectors[i].encryptOID == AES192GCMb ||
++                 testVectors[i].encryptOID == AES256GCMb) &&
++                testVectors[i].authAttribsSz == 0 &&
++                testVectors[i].unauthAttribsSz == 0 &&
++                envelopedSz > (WC_AES_BLOCK_SIZE + 2)) {
++            int macIdx = envelopedSz - (WC_AES_BLOCK_SIZE + 2);
++            byte* tampered = NULL;
++
++            /* For plain DER output without unauthenticated attributes, the
++             * MAC OCTET STRING is the final field. */
++            if (enveloped[macIdx] == ASN_OCTET_STRING &&
++                    enveloped[macIdx + 1] == WC_AES_BLOCK_SIZE) {
++                tampered = (byte*)XMALLOC((word32)envelopedSz, HEAP_HINT,
++                                          DYNAMIC_TYPE_TMP_BUFFER);
++                if (tampered == NULL) {
++                    wc_PKCS7_Free(pkcs7);
++                    ERROR_OUT(WC_TEST_RET_ENC_ERRNO, out);
++                }
++                XMEMCPY(tampered, enveloped, (word32)envelopedSz);
++                tampered[macIdx + 1] = 1;
++
++                decodedSz = wc_PKCS7_DecodeAuthEnvelopedData(pkcs7, tampered,
++                        (word32)envelopedSz, decoded, PKCS7_BUF_SIZE);
++
++                XFREE(tampered, HEAP_HINT, DYNAMIC_TYPE_TMP_BUFFER);
++                tampered = NULL;
++
++                if (decodedSz > 0) {
++                    wc_PKCS7_Free(pkcs7);
++                    ERROR_OUT(WC_TEST_RET_ENC_NC, out);
++                }
++                tagTruncationChecked = 1;
++            }
++        }
++#endif
++
+ #ifdef PKCS7_OUTPUT_TEST_BUNDLES
+         /* output pkcs7 envelopedData for external testing */
+         pkcs7File = XFOPEN(testVectors[i].outFileName, "wb");
+diff --git a/wolfssl/wolfcrypt/settings.h b/wolfssl/wolfcrypt/settings.h
+index a0c79c5e846..4929b61cb43 100644
+--- a/wolfssl/wolfcrypt/settings.h
++++ b/wolfssl/wolfcrypt/settings.h
+@@ -3429,6 +3429,8 @@ extern void uITRON4_free(void *p) ;
+ /* Default AES minimum auth tag sz, allow user to override */
+ #ifndef WOLFSSL_MIN_AUTH_TAG_SZ
+     #define WOLFSSL_MIN_AUTH_TAG_SZ 12
++#elif WOLFSSL_MIN_AUTH_TAG_SZ < 1
++    #error WOLFSSL_MIN_AUTH_TAG_SZ must be at least 1
+ #endif
+ 
+ 

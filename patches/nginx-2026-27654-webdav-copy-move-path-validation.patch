@@ -1,0 +1,119 @@
+From f0a084645b8fede56ee08f2cc557c2475eb2a28d Mon Sep 17 00:00:00 2001
+From: Sai Krishna Kumar Reddy Yadamakanti <saikrishnakumarreddy@gmail.com>
+Date: Tue, 5 May 2026 12:01:04 +0000
+Subject: [PATCH] Dav: improved path validation for COPY and MOVE operations
+
+The COPY and MOVE handler did not validate whether source and
+destination paths referred to the same resource or a parent-child
+collection relationship, which could corrupt or destroy files.
+
+Now 403 is returned if paths match or one is a prefix of the other.
+
+Reported by Mufeed VH of Winfunc Research.
+---
+ src/http/modules/ngx_http_dav_module.c | 71 ++++++++++++++++++++++++++
+ 1 file changed, 71 insertions(+)
+
+diff --git a/src/http/modules/ngx_http_dav_module.c b/src/http/modules/ngx_http_dav_module.c
+index 4619b139a2..dd960ca271 100644
+--- a/src/http/modules/ngx_http_dav_module.c
++++ b/src/http/modules/ngx_http_dav_module.c
+@@ -47,6 +47,9 @@ static ngx_int_t ngx_http_dav_mkcol_handler(ngx_http_request_t *r,
+     ngx_http_dav_loc_conf_t *dlcf);
+ 
+ static ngx_int_t ngx_http_dav_copy_move_handler(ngx_http_request_t *r);
++static void ngx_http_dav_merge_slashes(ngx_str_t *path);
++static ngx_int_t ngx_http_dav_validate_paths(ngx_http_request_t *r,
++    ngx_str_t *src, ngx_str_t *dst, ngx_uint_t slash, ngx_table_elt_t *dest);
+ static ngx_int_t ngx_http_dav_copy_dir(ngx_tree_ctx_t *ctx, ngx_str_t *path);
+ static ngx_int_t ngx_http_dav_copy_dir_time(ngx_tree_ctx_t *ctx,
+     ngx_str_t *path);
+@@ -719,6 +722,9 @@ ngx_http_dav_copy_move_handler(ngx_http_request_t *r)
+ 
+     r->uri = uri;
+ 
++    ngx_http_dav_merge_slashes(&path);
++    ngx_http_dav_merge_slashes(&copy.path);
++
+     copy.path.len--;  /* omit "\0" */
+ 
+     if (copy.path.data[copy.path.len - 1] == '/') {
+@@ -733,6 +739,12 @@ ngx_http_dav_copy_move_handler(ngx_http_request_t *r)
+     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                    "http copy to: \"%s\"", copy.path.data);
+ 
++    if (ngx_http_dav_validate_paths(r, &path, &copy.path, slash, dest)
++        != NGX_OK)
++    {
++        return NGX_HTTP_FORBIDDEN;
++    }
++
+     if (ngx_link_info(copy.path.data, &fi) == NGX_FILE_ERROR) {
+         err = ngx_errno;
+ 
+@@ -870,6 +882,65 @@ ngx_http_dav_copy_move_handler(ngx_http_request_t *r)
+ }
+ 
+ 
++static void
++ngx_http_dav_merge_slashes(ngx_str_t *path)
++{
++    u_char  *p, *q;
++
++    p = path->data;
++    q = path->data;
++
++    while (*p) {
++        *q++ = *p;
++
++        if (*p++ == '/') {
++            while (*p == '/') {
++                p++;
++            }
++        }
++    }
++
++    *q++ = '\0';
++    path->len = q - path->data;
++}
++
++
++static ngx_int_t
++ngx_http_dav_validate_paths(ngx_http_request_t *r, ngx_str_t *src,
++    ngx_str_t *dst, ngx_uint_t slash, ngx_table_elt_t *dest)
++{
++    size_t  len;
++
++    len = src->len - 1;
++
++    if (len > 0 && src->data[len - 1] == '/') {
++        len--;
++    }
++
++    if (len == dst->len && ngx_strncmp(src->data, dst->data, len) == 0) {
++        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
++                      "both URI \"%V\" and \"Destination\" URI \"%V\" "
++                      "point to the same location",
++                      &r->uri, &dest->value);
++        return NGX_HTTP_FORBIDDEN;
++    }
++
++    if (slash
++        && ngx_strncmp(src->data, dst->data, ngx_min(len, dst->len)) == 0
++        && (len < dst->len
++            ? dst->data[len] == '/'
++            : src->data[dst->len] == '/'))
++    {
++        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
++                      "\"%V\" could not be %Ved to collection \"%V\"",
++                      &r->uri, &r->method_name, &dest->value);
++        return NGX_HTTP_FORBIDDEN;
++    }
++
++    return NGX_OK;
++}
++
++
+ static ngx_int_t
+ ngx_http_dav_copy_dir(ngx_tree_ctx_t *ctx, ngx_str_t *path)
+ {

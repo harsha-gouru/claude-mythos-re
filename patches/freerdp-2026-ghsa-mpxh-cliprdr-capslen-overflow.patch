@@ -1,0 +1,71 @@
+From 0fba1f4dbff7585c9c99873d7c07d7dac46510c3 Mon Sep 17 00:00:00 2001
+From: Kevin Valerio <kvalerio@protonmail.com>
+Date: Wed, 29 Apr 2026 22:39:54 +0200
+Subject: [PATCH] fix(cliprdr): validate capabilitySetLength in server caps
+
+---
+ channels/cliprdr/server/cliprdr_main.c | 38 +++++++++++++++++++++++---
+ 1 file changed, 34 insertions(+), 4 deletions(-)
+
+diff --git a/channels/cliprdr/server/cliprdr_main.c b/channels/cliprdr/server/cliprdr_main.c
+index f40033f587f5..57249900d7b5 100644
+--- a/channels/cliprdr/server/cliprdr_main.c
++++ b/channels/cliprdr/server/cliprdr_main.c
+@@ -525,15 +525,45 @@ static UINT cliprdr_server_receive_capabilities(CliprdrServerContext* context, w
+ 	for (size_t index = 0; index < capabilities.cCapabilitiesSets; index++)
+ 	{
+ 		void* tmp = nullptr;
+-		if (!Stream_CheckAndLogRequiredLength(TAG, s, 4))
++		const size_t cap_set_offset = cap_sets_size;
++		if (!Stream_CheckAndLogRequiredLength(TAG, s, sizeof(CLIPRDR_CAPABILITY_SET)))
+ 			goto out;
+ 		Stream_Read_UINT16(s, capabilitySetType);   /* capabilitySetType (2 bytes) */
+ 		Stream_Read_UINT16(s, capabilitySetLength); /* capabilitySetLength (2 bytes) */
+ 
++		if (capabilitySetLength < sizeof(CLIPRDR_CAPABILITY_SET))
++		{
++			WLog_ERR(TAG,
++			         "invalid capabilitySetLength %" PRIu16 " < %" PRIuz
++			         " (capabilitySetType=%" PRIu16 ")",
++			         capabilitySetLength, sizeof(CLIPRDR_CAPABILITY_SET), capabilitySetType);
++			goto out;
++		}
++
++		if (!Stream_CheckAndLogRequiredLength(
++		        TAG, s, (size_t)capabilitySetLength - sizeof(CLIPRDR_CAPABILITY_SET)))
++			goto out;
++
++		switch (capabilitySetType)
++		{
++			case CB_CAPSTYPE_GENERAL:
++				if (capabilitySetLength != sizeof(CLIPRDR_GENERAL_CAPABILITY_SET))
++				{
++					WLog_ERR(TAG,
++					         "invalid capabilitySetLength %" PRIu16 " != %" PRIuz
++					         " (capabilitySetType=CB_CAPSTYPE_GENERAL)",
++					         capabilitySetLength, sizeof(CLIPRDR_GENERAL_CAPABILITY_SET));
++					goto out;
++				}
++				break;
++			default:
++				WLog_ERR(TAG, "unknown cliprdr capability set: %" PRIu16 "", capabilitySetType);
++				goto out;
++		}
++
+ 		cap_sets_size += capabilitySetLength;
+ 
+-		if (cap_sets_size > 0)
+-			tmp = realloc(capabilities.capabilitySets, cap_sets_size);
++		tmp = realloc(capabilities.capabilitySets, cap_sets_size);
+ 		if (tmp == nullptr)
+ 		{
+ 			WLog_ERR(TAG, "capabilities.capabilitySets realloc failed!");
+@@ -543,7 +573,7 @@ static UINT cliprdr_server_receive_capabilities(CliprdrServerContext* context, w
+ 
+ 		capabilities.capabilitySets = (CLIPRDR_CAPABILITY_SET*)tmp;
+ 
+-		capSet = &(capabilities.capabilitySets[index]);
++		capSet = (CLIPRDR_CAPABILITY_SET*)(((BYTE*)capabilities.capabilitySets) + cap_set_offset);
+ 
+ 		capSet->capabilitySetType = capabilitySetType;
+ 		capSet->capabilitySetLength = capabilitySetLength;

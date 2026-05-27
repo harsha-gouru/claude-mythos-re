@@ -6,3 +6,5 @@ sources/
 .venv/
 __pycache__/
 *.pyc
+# Upstream outside-in replications — re-cloned via instructions in docs/replications-diff.md
+replications/
